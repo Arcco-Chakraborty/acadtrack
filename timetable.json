@@ -1,0 +1,45 @@
+{
+  "_example": true,
+  "_source": "Fictional data for demonstrating the importer.",
+  "semester": {
+    "name": "Synthetic demonstration term",
+    "start": "2030-01-07",
+    "end": "2030-02-01"
+  },
+  "courses": [
+    {
+      "code": "DEMO 101",
+      "title": "Sample Course Alpha",
+      "instructor": "Example Instructor A",
+      "credits": 3,
+      "color": "#4477aa",
+      "slots": [
+        {
+          "weekday": "Mon",
+          "start": "09:15",
+          "end": "10:05",
+          "kind": "L",
+          "room": "Example room A",
+          "label": "Example lecture"
+        }
+      ]
+    },
+    {
+      "code": "DEMO 102",
+      "title": "Sample Course Beta",
+      "instructor": "Example Instructor B",
+      "credits": 2,
+      "color": "#ee6677",
+      "slots": [
+        {
+          "weekday": "Wed",
+          "start": "13:15",
+          "end": "14:05",
+          "kind": "P",
+          "room": "Example room B",
+          "label": "Example practical"
+        }
+      ]
+    }
+  ]
+}
