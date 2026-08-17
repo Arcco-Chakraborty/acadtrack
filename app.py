@@ -16,6 +16,7 @@ from flask import (Flask, abort, flash, g, redirect, render_template, request,
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import db
+import llm
 import schedule as sch
 from auth import auth_bp, current_user, login_required
 
@@ -306,6 +307,8 @@ def register_routes(app: Flask) -> None:
             "course.html", course=course, topics=topics, lectures=lectures,
             stats=stats, pace=sch.pace(stats), today=today, pos=pos,
             suggest=sch.suggest_topics(topics, course["lectures_done"] or 0),
+            llm_ready=llm.configured(),
+            estimated=db.get_setting(conn, f"estimated_lectures_{course_id}") == "1",
             slots=db.list_slots(conn, course_id),
             last=db.last_covered(conn, course_id),
             week=sch.week_summary(lectures, week_start, today),
@@ -452,6 +455,49 @@ def register_routes(app: Flask) -> None:
         return {"n": n, "done": sorted(s["done"]),
                 "partial": sorted(s["partial"]),
                 "unnumbered": [t["id"] for t in s["unnumbered"]]}
+
+    @app.route("/course/<int:course_id>/estimate", methods=["POST"])
+    @login_required
+    def course_estimate(course_id: int):
+        """Fill in lecture ranges for a course whose handout gave none.
+
+        Only ever touches topics that have no numbers already — a handout's own
+        numbering is fact and must never be overwritten by an estimate.
+        """
+        conn = app.config["GET_CONN"]()
+        course = db.get_course(conn, course_id)
+        if course is None:
+            abort(404)
+        if not llm.configured():
+            flash("No Gemini keys configured (GEMINI_API_KEYS).", "error")
+            return _back("courses")
+
+        topics = db.list_topics(conn, course_id)
+        if any(t["lec_from"] for t in topics):
+            flash("This course already has lecture numbers from its handout — "
+                  "not overwriting them.", "error")
+            return _back("courses")
+        planned = (_int(request.form.get("lectures_planned"))
+                   or course["lectures_planned"])
+        if not planned:
+            flash("Set how many lectures the course plan has first.", "error")
+            return _back("courses")
+
+        try:
+            ranges = llm.estimate_lecture_ranges(
+                course["code"], course["title"], planned,
+                [t["title"] for t in topics])
+        except llm.LLMError as e:
+            flash(f"Could not estimate: {e}", "error")
+            return _back("courses")
+
+        for t, (lo, hi) in zip(topics, ranges):
+            db.update_topic(conn, t["id"], lec_from=lo, lec_to=hi)
+        db.update_course(conn, course_id, lectures_planned=planned)
+        db.set_setting(conn, f"estimated_lectures_{course_id}", "1")
+        flash(f"Estimated lecture ranges for {len(ranges)} topics. "
+              f"These are a guess, not the handout — check them.", "ok")
+        return _back("courses")
 
     @app.route("/topic/<int:topic_id>", methods=["POST"])
     @login_required

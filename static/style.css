@@ -272,6 +272,10 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 5px;
        color: var(--accent); font-variant-numeric: tabular-nums; }
 .lec.none { color: var(--line); }
 
+.estimate { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.estimate form { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.estimate label { display: flex; gap: 7px; align-items: center; }
+
 /* ----------------------------------------------------------------- stats */
 
 .statgrid { display: grid; gap: 12px;

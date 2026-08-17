@@ -21,7 +21,8 @@
   </div>
 </section>
 
-{{ progress_panel(course, topics, pos, suggest, back) }}
+{{ progress_panel(course, topics, pos, suggest, back,
+                  llm_ready=llm_ready, estimated=estimated) }}
 
 <section class="panel stats-panel">
   <div class="statgrid">

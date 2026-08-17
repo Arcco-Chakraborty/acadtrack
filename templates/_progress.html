@@ -1,7 +1,8 @@
 {# The primary way progress is recorded. Set the lecture watermark, and the
    checkboxes it implies come pre-ticked from the handout's own lecture
    numbering — correct any that are wrong, then save once. #}
-{% macro progress_panel(course, topics, pos, suggest, next_url) %}
+{% macro progress_panel(course, topics, pos, suggest, next_url,
+                        llm_ready=False, estimated=False) %}
 <section class="panel progress-panel">
   <div class="panel-head">
     <h2>Where I've got to</h2>
@@ -75,11 +76,34 @@
     </div>
     <p class="muted small">
       Left box = done, right = partly done.
+      {% if estimated %}Lecture ranges here are an <b>AI estimate</b>, not the
+      handout — correct any that look wrong.{% endif %}
       {% if pos.unnumbered %}{{ pos.unnumbered }} topic{{ 's' if pos.unnumbered != 1 }}
       have no lecture number in the handout, so the watermark never ticks
       {{ 'them' if pos.unnumbered != 1 else 'it' }} — tick by hand.{% endif %}
     </p>
     {% endif %}
   </form>
+
+  {# Offered only when the handout genuinely gave nothing to work with. A
+     handout's own numbering is fact and is never overwritten. #}
+  {% if topics and pos.unnumbered == topics|length %}
+  <div class="estimate">
+    {% if llm_ready %}
+      <form method="post" action="{{ url_for('course_estimate', course_id=course['id']) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <label class="muted small">This handout gives no lecture numbers. Spread
+          <input type="number" name="lectures_planned" min="1" max="200"
+                 value="{{ course['lectures_planned'] or 42 }}" style="width:4.5rem">
+          lectures across its {{ topics|length }} topics?</label>
+        <button class="btn small ghost">Estimate with AI</button>
+      </form>
+    {% else %}
+      <p class="muted small">This handout gives no lecture numbers, and no Gemini
+        keys are configured, so the watermark can't tick these automatically.</p>
+    {% endif %}
+  </div>
+  {% endif %}
 </section>
 {% endmacro %}
