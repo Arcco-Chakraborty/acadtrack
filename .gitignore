@@ -9,3 +9,7 @@ __pycache__/
 venv/
 .pytest_cache/
 *.bak
+
+# Personal academic PDFs pulled from example-service
+handouts/
+*.png

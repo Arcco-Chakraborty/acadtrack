@@ -174,6 +174,54 @@ def test_timetable_import_matches_by_code_and_does_not_duplicate(client):
     conn.close()
 
 
+def test_import_loads_holidays_and_never_duplicates_topics(client):
+    """Re-importing a corrected syllabus must update, not append a second copy
+    of every topic — the same guarantee courses and slots already had."""
+    import json
+    payload = {
+        "semester": {"start": "2054-08-03", "end": "2054-08-31"},
+        "holidays": [
+            {"date": "2054-08-17", "label": "One day"},
+            {"from": "2054-08-24", "to": "2054-08-26", "label": "A whole week"},
+        ],
+        "courses": [{
+            "code": "DEMO 206",
+            "slots": [{"weekday": "Mon", "start": "09:00", "end": "09:50"}],
+            "topics": [{"unit": "M1", "title": "Objects"}, "Inheritance"],
+        }],
+    }
+    post(client, "/timetable/import", payload=json.dumps(payload))
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 206")["id"]
+
+    assert len(db.list_holidays(conn)) == 4          # 1 single + 3 from range
+    assert len(db.list_topics(conn, cid)) == 2
+    dates = [l["date"] for l in db.list_lectures(conn, cid)]
+    assert "2054-08-17" not in dates                 # holiday cleared
+    assert "2054-08-24" not in dates                 # inside the range
+    assert "2054-08-03" in dates and "2054-08-10" in dates
+
+    post(client, "/timetable/import", payload=json.dumps(payload))
+    assert len(db.list_topics(conn, cid)) == 2       # not 4
+    assert len(db.list_lectures(conn, cid)) == len(dates)
+    conn.close()
+
+
+def test_shortening_the_semester_retracts_later_classes(client):
+    post(client, "/settings", semester_start="2054-08-03", semester_end="2054-08-31")
+    post(client, "/courses", code="DEMO 208")
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 208")["id"]
+    post(client, f"/course/{cid}/slots", weekday="0", start_time="12:00",
+         end_time="12:50")
+    assert len(db.list_lectures(conn, cid)) == 5      # 5 Mondays
+
+    post(client, "/settings", semester_start="2054-08-03", semester_end="2054-08-17")
+    dates = [l["date"] for l in db.list_lectures(conn, cid)]
+    assert dates == ["2054-08-03", "2054-08-10", "2054-08-17"]
+    conn.close()
+
+
 def test_import_rejects_bad_json_without_500(client):
     r = post(client, "/timetable/import", payload="{not json")
     assert r.status_code == 200

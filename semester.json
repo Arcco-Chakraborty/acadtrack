@@ -1,0 +1,64 @@
+{
+  "_example": true,
+  "_source": [
+    "Fictional data for demonstrating topics and assessments."
+  ],
+  "semester": {
+    "name": "Synthetic demonstration term",
+    "start": "2030-01-07",
+    "end": "2030-02-01"
+  },
+  "holidays": [
+    {
+      "date": "2030-01-21",
+      "label": "Example break"
+    }
+  ],
+  "courses": [
+    {
+      "code": "DEMO 101",
+      "title": "Sample Course Alpha",
+      "instructor": "Example Instructor A",
+      "credits": 3,
+      "topics": [
+        {
+          "unit": "Example unit",
+          "title": "Demonstration topic A",
+          "hours": 2
+        },
+        {
+          "unit": "Example unit",
+          "title": "Demonstration topic B",
+          "hours": 1
+        }
+      ],
+      "exams": [
+        {
+          "label": "Example assessment",
+          "date": "2030-01-25",
+          "session": "Example morning session"
+        }
+      ]
+    },
+    {
+      "code": "DEMO 102",
+      "title": "Sample Course Beta",
+      "instructor": "Example Instructor B",
+      "credits": 2,
+      "topics": [
+        {
+          "unit": "Example unit",
+          "title": "Demonstration topic C",
+          "hours": 1
+        }
+      ],
+      "exams": [
+        {
+          "label": "Example assessment",
+          "date": "2030-01-30",
+          "session": "Example afternoon session"
+        }
+      ]
+    }
+  ]
+}

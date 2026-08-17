@@ -29,6 +29,7 @@ import sys
 
 import app as acad
 import db
+import schedule as sch
 
 
 def main(argv: list[str]) -> int:
@@ -48,22 +49,18 @@ def main(argv: list[str]) -> int:
         counts = acad.import_timetable(conn, payload, replace=replace)
         start = db.get_setting(conn, "semester_start")
         end = db.get_setting(conn, "semester_end")
-        made = 0
-        if start and end:
-            import schedule as sch
-            holidays = {h["date"] for h in db.list_holidays(conn)}
-            s, e = sch.parse_date(start), sch.parse_date(end)
-            for course in db.list_courses(conn):
-                for slot in db.list_slots(conn, course["id"]):
-                    for d in sch.occurrence_dates(slot["weekday"], s, e, holidays):
-                        if db.create_lecture(conn, course["id"], sch.fmt(d),
-                                             slot["start_time"], slot["end_time"],
-                                             slot["kind"], slot["id"]) is not None:
-                            made += 1
+        before = len(db.list_lectures(conn))
+        # Deliberately the same regenerate() the web app uses, rather than a
+        # second copy of the logic: it is the one place that also retracts
+        # classes falling on a holiday or outside a shortened semester.
+        acad.regenerate(conn, from_date=sch.parse_date(start) if start else None)
+        after = len(db.list_lectures(conn))
 
         print(f"courses added : {counts['courses']}")
         print(f"slots added   : {counts['slots']}")
-        print(f"classes made  : {made}")
+        print(f"holidays      : {counts['holidays']}")
+        print(f"topics added  : {counts['topics']}")
+        print(f"classes       : {before} -> {after}")
         if not (start and end):
             print("NOTE: no semester start/end set, so no classes were "
                   "generated. Set them in Settings and hit Rebuild.")

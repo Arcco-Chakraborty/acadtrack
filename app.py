@@ -130,6 +130,20 @@ def regenerate(conn, course_id: int | None = None, from_date: date | None = None
         return 0
     from_date = from_date or max(start, date.today())
     holidays = {h["date"] for h in db.list_holidays(conn)}
+    # A holiday added after the schedule was built leaves classes sitting on a
+    # day that will not happen, so clear those too — but only unmarked ones.
+    if holidays:
+        marks = ",".join("?" * len(holidays))
+        conn.execute(
+            f"DELETE FROM lecture WHERE date IN ({marks}) AND status = 'scheduled' "
+            f"AND id NOT IN (SELECT lecture_id FROM lecture_topic)",
+            list(holidays))
+    # Likewise, shortening the semester must retract the classes beyond it.
+    conn.execute(
+        "DELETE FROM lecture WHERE (date < ? OR date > ?) AND status = 'scheduled' "
+        "AND id NOT IN (SELECT lecture_id FROM lecture_topic)",
+        (sch.fmt(start), sch.fmt(end)))
+    conn.commit()
     courses = ([db.get_course(conn, course_id)] if course_id
                else db.list_courses(conn))
     made = 0
@@ -584,12 +598,30 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
     Matching is by course code, so re-importing a corrected timetable updates
     in place instead of creating a second copy of every course.
     """
-    counts = {"courses": 0, "slots": 0}
+    counts = {"courses": 0, "slots": 0, "holidays": 0, "topics": 0}
     sem = payload.get("semester") or {}
     for key, setting in (("start", "semester_start"), ("end", "semester_end"),
                          ("name", "semester_name")):
         if sem.get(key):
             db.set_setting(conn, setting, str(sem[key]))
+
+    # Holidays travel with the semester so the whole term is reproducible from
+    # one file. A range ("from"/"to") expands to every date inclusive, which is
+    # how an academic calendar states exam weeks and breaks.
+    for h in payload.get("holidays", []):
+        label = str(h.get("label", "")) if isinstance(h, dict) else ""
+        if isinstance(h, str):
+            dates = [h]
+        elif h.get("from") and h.get("to"):
+            a, b = sch.parse_date(str(h["from"])), sch.parse_date(str(h["to"]))
+            dates = [sch.fmt(a + timedelta(days=i))
+                     for i in range((b - a).days + 1)] if a and b else []
+        else:
+            dates = [str(h.get("date", ""))]
+        for d in dates:
+            if sch.parse_date(d):
+                db.add_holiday(conn, d, label)
+                counts["holidays"] += 1
 
     for entry in payload.get("courses", []):
         code = str(entry.get("code", "")).strip()
@@ -631,11 +663,17 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
             have.add((wd, start, kind))
             counts["slots"] += 1
 
+        # Match slots' behaviour: re-importing a corrected syllabus must not
+        # append a second copy of every topic.
+        have_topics = {t["title"].strip().lower()
+                       for t in db.list_topics(conn, cid)}
         for t in entry.get("topics", []):
             title = t if isinstance(t, str) else str(t.get("title", ""))
             unit = "" if isinstance(t, str) else str(t.get("unit", ""))
-            if title.strip():
+            if title.strip() and title.strip().lower() not in have_topics:
                 db.create_topic(conn, cid, title, unit)
+                have_topics.add(title.strip().lower())
+                counts["topics"] += 1
     return counts
 
 
