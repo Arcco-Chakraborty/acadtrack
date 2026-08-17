@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% from "_macros.html" import bar, lecture_row, status_pill %}
+{% block title %}{{ course['code'] }} — acadtrack{% endblock %}
+
+{% block content %}
+{% set back = url_for('course_detail', course_id=course['id']) %}
+<section class="hero" style="--accent: {{ course['color'] or '#7aa2f7' }}">
+  <div>
+    <h1>{{ course['code'] }}</h1>
+    <p class="muted">{{ course['title'] }}{% if course['instructor'] %} · {{ course['instructor'] }}{% endif %}</p>
+    {% if last %}
+      <p class="lastdone">Done till: <b>{{ last['title'] }}</b>
+        <span class="muted">({{ last['unit'] or 'topic' }}, {{ last['date'] }})</span></p>
+    {% endif %}
+  </div>
+  <div class="counters">
+    <div class="counter big"><b>{{ week.left }}</b><span>left this week</span></div>
+    <div class="counter"><b>{{ stats.remaining }}</b><span>lectures left</span></div>
+    <div class="counter"><b>{{ stats.topics_left }}</b><span>topics left</span></div>
+    {% if pace %}<div class="counter {{ pace.tone }}"><b>{{ pace.label }}</b><span>{{ pace.delta }}% vs calendar</span></div>{% endif %}
+  </div>
+</section>
+
+<section class="panel stats-panel">
+  <div class="statgrid">
+    <div><span>Syllabus</span><b>{{ stats.topics_done }}/{{ stats.topics_total }}</b>{{ bar(stats.topics_pct) }}</div>
+    <div><span>Attendance</span><b>{% if stats.attendance_pct is not none %}{{ stats.attendance_pct }}%{% else %}—{% endif %}</b>{{ bar(stats.attendance_pct) }}</div>
+    <div><span>Held</span><b>{{ stats.held }}</b><span class="muted">of {{ stats.lectures_total }}</span></div>
+    <div><span>Attended</span><b class="good">{{ stats.attended }}</b></div>
+    <div><span>Skipped</span><b class="{{ 'bad' if stats.skipped }}">{{ stats.skipped }}</b></div>
+    <div><span>Cancelled</span><b>{{ stats.cancelled }}</b></div>
+    {% if stats.unmarked_past %}
+    <div><span>Unmarked past</span><b class="warn">{{ stats.unmarked_past }}</b></div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Syllabus</h2>
+    <span class="muted">{{ stats.topics_done }} done · {{ stats.topics_partial }} partial · {{ stats.topics_left }} left</span>
+  </div>
+  <div class="topics">
+  {% for t in topics %}
+    <div class="topic {{ t['status'] }}">
+      <form method="post" action="{{ url_for('topic_update', topic_id=t['id']) }}" class="topic-status">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="{{ back }}">
+        {% for value, glyph, title in [('pending','○','Not started'),('partial','◐','Partly done'),('done','●','Done')] %}
+          <button name="status" value="{{ value }}" title="{{ title }}"
+                  class="dot {{ 'on' if t['status'] == value }}">{{ glyph }}</button>
+        {% endfor %}
+      </form>
+      <div class="topic-text">
+        {% if t['unit'] %}<span class="unit">{{ t['unit'] }}</span>{% endif %}
+        <span class="tt">{{ t['title'] }}</span>
+      </div>
+      <div class="topic-actions">
+        <form method="post" action="{{ url_for('topic_move', topic_id=t['id']) }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="next" value="{{ back }}">
+          <button name="dir" value="up" class="icon" title="Move up">↑</button>
+          <button name="dir" value="down" class="icon" title="Move down">↓</button>
+        </form>
+        <form method="post" action="{{ url_for('topic_delete', topic_id=t['id']) }}"
+              onsubmit="return confirm('Delete this topic?')">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="next" value="{{ back }}">
+          <button class="icon danger" title="Delete">×</button>
+        </form>
+      </div>
+    </div>
+  {% else %}
+    <p class="empty">No topics yet — paste the handout's course plan below.</p>
+  {% endfor %}
+  </div>
+
+  <details class="add-topics" {{ 'open' if not topics }}>
+    <summary><b>Add topics</b></summary>
+    <form method="post" action="{{ url_for('topic_create', course_id=course['id']) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="next" value="{{ back }}">
+      <textarea name="titles" rows="8" placeholder="One topic per line. A short prefix before a colon becomes the unit:&#10;&#10;Unit 1: Asymptotic notation&#10;Unit 1: Recurrences and the master theorem&#10;Unit 2: Heaps and heapsort"></textarea>
+      <div class="row-form">
+        <input name="unit" placeholder="Unit (optional, applies to all)">
+        <button class="btn">Add</button>
+      </div>
+    </form>
+  </details>
+</section>
+
+<section class="panel">
+  <h2>Upcoming</h2>
+  {% if upcoming %}
+    <div class="lec-list">
+    {% for lec in upcoming %}
+      {{ lecture_row(lec, back, topics=topics, covered=topics_by_lecture.get(lec['id']), show_course=False) }}
+    {% endfor %}
+    </div>
+  {% else %}<p class="empty">Nothing scheduled ahead.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>History</h2>
+  {% if past %}
+    <div class="lec-list compact">
+    {% for lec in past %}
+      {{ lecture_row(lec, back, topics=topics, covered=topics_by_lecture.get(lec['id']), show_course=False) }}
+    {% endfor %}
+    </div>
+  {% else %}<p class="empty">No classes yet.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Timetable slots</h2>
+  <div class="table-ish">
+  {% for s in slots %}
+    <div class="slot-row">
+      <b>{{ WEEKDAYS[s['weekday']] }}</b>
+      <span>{{ fmt_time(s['start_time']) }} – {{ fmt_time(s['end_time']) }}</span>
+      <span class="kind">{{ KINDS.get(s['kind'], s['kind']) }}</span>
+      <span class="muted">{{ s['room'] }} {{ s['label'] }}</span>
+      <form method="post" action="{{ url_for('slot_delete', slot_id=s['id']) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="{{ back }}">
+        <button class="icon danger" title="Remove slot">×</button>
+      </form>
+    </div>
+  {% else %}<p class="empty">No weekly slots.</p>{% endfor %}
+  </div>
+
+  <form method="post" action="{{ url_for('slot_create', course_id=course['id']) }}" class="row-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ back }}">
+    <select name="weekday">
+      {% for i in range(7) %}<option value="{{ i }}">{{ WEEKDAYS[i] }}</option>{% endfor %}
+    </select>
+    <input type="time" name="start_time" value="09:00" required>
+    <input type="time" name="end_time" value="10:00" required>
+    <select name="kind">{% for k, label in KINDS.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select>
+    <input name="room" placeholder="Room" style="width:7rem">
+    <input name="label" placeholder="Slot" style="width:5rem">
+    <button class="btn">Add slot</button>
+  </form>
+</section>
+
+<section class="panel">
+  <details>
+    <summary><b>Edit course</b></summary>
+    <form method="post" action="{{ url_for('course_edit', course_id=course['id']) }}" class="row-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="next" value="{{ back }}">
+      <input name="code" value="{{ course['code'] }}" required>
+      <input name="title" value="{{ course['title'] }}">
+      <input name="instructor" value="{{ course['instructor'] }}">
+      <input name="credits" type="number" value="{{ course['credits'] or '' }}" style="width:5rem">
+      <input name="color" type="color" value="{{ course['color'] or '#7aa2f7' }}">
+      <button class="btn">Save</button>
+    </form>
+    <form method="post" action="{{ url_for('course_delete', course_id=course['id']) }}"
+          onsubmit="return confirm('Delete {{ course['code'] }} and every lecture and topic under it?')">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <button class="btn danger small">Delete course</button>
+    </form>
+  </details>
+</section>
+{% endblock %}

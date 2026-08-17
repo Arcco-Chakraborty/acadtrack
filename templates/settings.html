@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Settings — acadtrack{% endblock %}
+
+{% block content %}
+<section class="hero"><div><h1>Settings</h1></div></section>
+
+<section class="panel">
+  <h2>Semester</h2>
+  <p class="muted small">Classes are generated for every weekly slot between these two dates.
+    Change them and the schedule rebuilds — anything already marked survives.</p>
+  <form method="post" action="{{ url_for('settings_save') }}" class="row-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <label>Name <input name="semester_name" value="{{ settings.get('semester_name', '') }}" placeholder="Sem I 2054-27"></label>
+    <label>Start <input type="date" name="semester_start" value="{{ settings.get('semester_start', '') }}" required></label>
+    <label>End <input type="date" name="semester_end" value="{{ settings.get('semester_end', '') }}" required></label>
+    <button class="btn">Save &amp; rebuild</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Holidays &amp; breaks</h2>
+  <p class="muted small">No classes are generated on these dates, and adding one clears the
+    unmarked classes already sitting on that day.</p>
+  <div class="table-ish">
+  {% for h in holidays %}
+    <div class="slot-row">
+      <b>{{ h['date'] }}</b><span>{{ h['label'] }}</span>
+      <form method="post" action="{{ url_for('holiday_delete', holiday_id=h['id']) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <button class="icon danger" title="Remove">×</button>
+      </form>
+    </div>
+  {% else %}<p class="empty">None.</p>{% endfor %}
+  </div>
+  <form method="post" action="{{ url_for('holiday_add') }}" class="row-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="date" name="date" required>
+    <input name="label" placeholder="Reason (Diwali, midsems…)">
+    <button class="btn">Add</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Schedule</h2>
+  <form method="post" action="{{ url_for('schedule_regenerate') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <button class="btn ghost">Rebuild from timetable</button>
+  </form>
+  <p class="muted small">Fills in any missing classes for the current semester dates.
+    Safe to run any time.</p>
+</section>
+
+<section class="panel">
+  <h2>Access</h2>
+  <p class="muted small">Sign-in is restricted to these addresses. Change them in
+    <code>.env</code> (<code>ALLOWED_EMAILS</code>) and restart.</p>
+  <div class="table-ish">
+    {% for e in allowed.split(',') if e.strip() %}
+      <div class="slot-row"><b>{{ e.strip() }}</b>
+        <span class="muted">{{ 'signed in now' if user and user['email'] == e.strip().lower() else '' }}</span></div>
+    {% else %}
+      <p class="empty warn">No allowlist configured — nobody can sign in with Google.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

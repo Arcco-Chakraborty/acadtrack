@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% from "_macros.html" import bar %}
+{% block title %}Courses — acadtrack{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <div><h1>Courses</h1><p class="muted">{{ overview|length }} active</p></div>
+</section>
+
+<section class="panel">
+  <div class="table-ish">
+  {% for o in overview %}
+    {% set c = o.course %}{% set s = o.stats %}
+    <div class="course-row" style="--accent: {{ c['color'] or '#7aa2f7' }}">
+      <div class="cr-main">
+        <a class="cr-code" href="{{ url_for('course_detail', course_id=c['id']) }}">{{ c['code'] }}</a>
+        <div class="cr-title">{{ c['title'] }}{% if c['instructor'] %} · <span class="muted">{{ c['instructor'] }}</span>{% endif %}</div>
+      </div>
+      <div class="cr-metric">
+        <span class="muted">syllabus</span>
+        <b>{% if s.topics_total %}{{ s.topics_pct }}%{% else %}—{% endif %}</b>
+        {{ bar(s.topics_pct) }}
+      </div>
+      <div class="cr-metric">
+        <span class="muted">lectures</span>
+        <b>{{ s.held }} held · {{ s.remaining }} left</b>
+        <span class="submetrics"><span>✓ {{ s.attended }}</span><span class="{{ 'bad' if s.skipped }}">✗ {{ s.skipped }}</span></span>
+      </div>
+      <div class="cr-metric">
+        <span class="muted">this week</span>
+        <b>{{ o.week.left }} left</b>
+        <span class="submetrics"><span>{{ o.week.done }}/{{ o.week.total }} done</span></span>
+      </div>
+      <form method="post" action="{{ url_for('course_archive', course_id=c['id']) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <button name="archive" value="1" class="btn small ghost">Archive</button>
+      </form>
+    </div>
+  {% else %}
+    <p class="empty">No courses yet.</p>
+  {% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Add a course</h2>
+  <form method="post" action="{{ url_for('course_create') }}" class="row-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input name="code" placeholder="DEMO 204" required>
+    <input name="title" placeholder="Data Structures &amp; Algorithms">
+    <input name="instructor" placeholder="Instructor">
+    <input name="credits" type="number" min="0" max="10" placeholder="Cr" style="width:5rem">
+    <input name="color" type="color" value="#7aa2f7" title="Card colour">
+    <button class="btn">Add course</button>
+  </form>
+  <p class="muted small">Or paste your whole timetable at once in
+    <a href="{{ url_for('timetable') }}">Timetable</a>.</p>
+</section>
+
+{% if archived %}
+<section class="panel">
+  <h2>Archived</h2>
+  <div class="table-ish">
+  {% for c in archived %}
+    <div class="course-row muted">
+      <div class="cr-main"><a class="cr-code" href="{{ url_for('course_detail', course_id=c['id']) }}">{{ c['code'] }}</a>
+        <div class="cr-title">{{ c['title'] }}</div></div>
+      <form method="post" action="{{ url_for('course_archive', course_id=c['id']) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <button class="btn small ghost">Restore</button>
+      </form>
+    </div>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

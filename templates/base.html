@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}acadtrack{% endblock %}</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+{% if user %}
+<header class="topbar">
+  <a class="brand" href="{{ url_for('dashboard') }}">acadtrack</a>
+  <nav>
+    <a href="{{ url_for('dashboard') }}" {{ 'class=active' if request.endpoint == 'dashboard' }}>Today</a>
+    <a href="{{ url_for('week') }}" {{ 'class=active' if request.endpoint == 'week' }}>Week</a>
+    <a href="{{ url_for('courses') }}" {{ 'class=active' if request.endpoint in ('courses', 'course_detail') }}>Courses</a>
+    <a href="{{ url_for('timetable') }}" {{ 'class=active' if request.endpoint == 'timetable' }}>Timetable</a>
+    <a href="{{ url_for('settings_page') }}" {{ 'class=active' if request.endpoint == 'settings_page' }}>Settings</a>
+  </nav>
+  <a class="who" href="{{ url_for('auth.logout') }}" title="{{ user['email'] }} — sign out">
+    {% if user['picture'] %}<img src="{{ user['picture'] }}" alt="">{% endif %}
+    <span>Sign out</span>
+  </a>
+</header>
+{% endif %}
+
+<main class="{% block main_class %}wrap{% endblock %}">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flashes">
+      {% for category, message in messages %}
+        <div class="flash {{ category }}">{{ message }}</div>
+      {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+
+<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>

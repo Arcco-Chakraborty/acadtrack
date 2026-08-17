@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Sign in — acadtrack{% endblock %}
+{% block main_class %}wrap login{% endblock %}
+
+{% block content %}
+<div class="login-card">
+  <h1>acadtrack</h1>
+  <p class="muted">Course-wise academic tracking. Private.</p>
+
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+
+  {% if configured %}
+    <a class="btn google" href="{{ url_for('auth.google_start') }}">Continue with Google</a>
+  {% else %}
+    <p class="muted small">Google sign-in is not configured
+      (<code>GOOGLE_CLIENT_ID</code> is unset in <code>.env</code>).</p>
+  {% endif %}
+
+  {% if local_login %}
+    <form method="post" action="{{ url_for('auth.local_login') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <button class="btn ghost">Local dev sign-in</button>
+    </form>
+    <p class="muted small">Enabled by <code>ACADTRACK_LOCAL_LOGIN=1</code>; it stops working
+      the moment a real client id is set.</p>
+  {% endif %}
+</div>
+{% endblock %}

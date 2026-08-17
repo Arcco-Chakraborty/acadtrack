@@ -1,0 +1,67 @@
+{# Shared fragments. Every form posts and redirects back to `next`. #}
+
+{% macro bar(pct, tone='') %}
+<div class="bar {{ tone }}"><span style="width: {{ pct or 0 }}%"></span></div>
+{% endmacro %}
+
+{% macro status_pill(status) %}
+<span class="pill {{ status }}">{{ status }}</span>
+{% endmacro %}
+
+{% macro mark_buttons(lecture, next_url) %}
+<form method="post" action="{{ url_for('lecture_status', lecture_id=lecture['id']) }}" class="marks">
+  <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="next" value="{{ next_url }}">
+  {% for value, label, title in [
+       ('attended', 'Attended', 'I went'),
+       ('skipped', 'Skipped', 'It happened, I did not go'),
+       ('cancelled', 'Cancelled', 'Class did not happen'),
+       ('scheduled', 'Clear', 'Unmark')] %}
+    <button name="status" value="{{ value }}" title="{{ title }}"
+            class="mark {{ value }} {{ 'on' if lecture['status'] == value }}">{{ label }}</button>
+  {% endfor %}
+</form>
+{% endmacro %}
+
+{% macro lecture_row(lecture, next_url, topics=None, covered=None, show_course=True) %}
+<div class="lec {{ lecture['status'] }}">
+  <div class="lec-when">
+    <b>{{ fmt_time(lecture['start_time']) }}</b>
+    <span class="muted">{{ fmt_time(lecture['end_time']) }}</span>
+  </div>
+  <div class="lec-what">
+    <div class="lec-title">
+      {% if show_course %}<a href="{{ url_for('course_detail', course_id=lecture['course_id']) }}">{{ lecture['code'] }}</a>{% endif %}
+      <span class="kind">{{ KINDS.get(lecture['kind'], lecture['kind']) }}</span>
+      {{ status_pill(lecture['status']) }}
+    </div>
+    {% if covered %}
+      <div class="covered">{% for t in covered %}<span class="tag">{{ t['title'] }}</span>{% endfor %}</div>
+    {% endif %}
+    {% if lecture['note'] %}<div class="note">{{ lecture['note'] }}</div>{% endif %}
+  </div>
+  <div class="lec-actions">
+    {{ mark_buttons(lecture, next_url) }}
+    {% if topics %}
+    <details class="cover">
+      <summary>Covered…</summary>
+      <form method="post" action="{{ url_for('lecture_topics', lecture_id=lecture['id']) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <div class="topic-picks">
+        {% set chosen = covered | map(attribute='id') | list if covered else [] %}
+        {% for t in topics %}
+          <label class="{{ 'done' if t['status'] == 'done' }}">
+            <input type="checkbox" name="topic_id" value="{{ t['id'] }}"
+                   {{ 'checked' if t['id'] in chosen }}>
+            {{ t['title'] }}
+          </label>
+        {% endfor %}
+        </div>
+        <button class="btn small">Save</button>
+      </form>
+    </details>
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}

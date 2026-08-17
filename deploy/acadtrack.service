@@ -1,0 +1,27 @@
+[Unit]
+Description=Academic tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=__USER__
+Group=__USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__APP_DIR__/.env
+ExecStart=__APP_DIR__/.venv/bin/gunicorn --workers 1 --threads 2 --timeout 120 --bind 127.0.0.1:__PORT__ --access-logfile - --error-logfile - 'app:app'
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=__APP_DIR__/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% from "_macros.html" import bar, lecture_row, status_pill %}
+{% block title %}Today — acadtrack{% endblock %}
+
+{% block content %}
+{% if not configured %}
+  <div class="callout">
+    Set the semester start and end in <a href="{{ url_for('settings_page') }}">Settings</a>
+    before anything can be scheduled.
+  </div>
+{% endif %}
+
+<section class="hero">
+  <div>
+    {# %-d is glibc-only and raises on Windows; strip the zero in Jinja instead. #}
+    <h1>{{ today.strftime('%A, ') }}{{ today.strftime('%d').lstrip('0') }} {{ today.strftime('%B') }}</h1>
+    <p class="muted">
+      Week of {{ week_start.strftime('%d %b') }}–{{ week_end.strftime('%d %b') }}
+      {% if week_no %}· teaching week {{ week_no }}{% endif %}
+    </p>
+  </div>
+  <div class="counters">
+    <div class="counter big"><b>{{ totals.left }}</b><span>classes left this week</span></div>
+    <div class="counter"><b>{{ totals.done }}/{{ totals.total }}</b><span>week done</span></div>
+    <div class="counter"><b>{{ totals.skipped }}</b><span>skipped so far</span></div>
+    {% if totals.unmarked %}
+    <div class="counter warn"><b>{{ totals.unmarked }}</b><span>unmarked past</span></div>
+    {% endif %}
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Today</h2>
+  {% if today_lectures %}
+    <div class="lec-list">
+    {% for lec in today_lectures %}
+      {{ lecture_row(lec, url_for('dashboard')) }}
+    {% endfor %}
+    </div>
+  {% else %}
+    <p class="empty">Nothing scheduled today.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Courses</h2>
+    <a class="btn small ghost" href="{{ url_for('courses') }}">Manage</a>
+  </div>
+  {% if overview %}
+  <div class="cards">
+    {% for o in overview %}
+    {% set c = o.course %}{% set s = o.stats %}
+    <a class="card" href="{{ url_for('course_detail', course_id=c['id']) }}"
+       style="--accent: {{ c['color'] or '#7aa2f7' }}">
+      <div class="card-head">
+        <b>{{ c['code'] }}</b>
+        {% if o.pace %}<span class="pace {{ o.pace.tone }}">{{ o.pace.label }}</span>{% endif %}
+      </div>
+      <div class="card-title">{{ c['title'] }}</div>
+
+      <div class="metric">
+        <span>Syllabus</span>
+        <b>{% if s.topics_total %}{{ s.topics_done }}/{{ s.topics_total }} topics{% else %}no topics yet{% endif %}</b>
+      </div>
+      {{ bar(s.topics_pct) }}
+
+      <div class="metric">
+        <span>Lectures</span>
+        <b>{{ s.held }} held · {{ s.remaining }} left</b>
+      </div>
+      <div class="submetrics">
+        <span title="attended">✓ {{ s.attended }}</span>
+        <span title="skipped" class="{{ 'bad' if s.skipped }}">✗ {{ s.skipped }}</span>
+        {% if s.attendance_pct is not none %}<span>{{ s.attendance_pct }}% attended</span>{% endif %}
+      </div>
+
+      <div class="card-foot">
+        <span class="{{ 'strong' if o.week.left }}">{{ o.week.left }} left this week</span>
+        {% if o.last %}<span class="muted trunc">at: {{ o.last['title'] }}</span>{% endif %}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+    <p class="empty">No courses yet — add them in
+      <a href="{{ url_for('courses') }}">Courses</a>, or paste a timetable in
+      <a href="{{ url_for('timetable') }}">Timetable</a>.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>This week</h2>
+    <a class="btn small ghost" href="{{ url_for('week') }}">Open week view</a>
+  </div>
+  <div class="weekstrip">
+    {% for day in days %}
+    <div class="day {{ 'is-today' if day.date == today }}">
+      <div class="day-head">{{ day.label }} <span class="muted">{{ day.date.strftime('%d') }}</span></div>
+      {% for lec in day.lectures %}
+        <div class="chip {{ lec['status'] }}" style="--accent: {{ lec['color'] or '#7aa2f7' }}">
+          <b>{{ lec['code'] }}</b>
+          <span>{{ fmt_time(lec['start_time']) }}</span>
+        </div>
+      {% else %}
+        <div class="chip empty">—</div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
