@@ -59,25 +59,28 @@
       </div>
       <div class="card-title">{{ c['title'] }}</div>
 
+      {% set p = o.pos %}
       <div class="metric">
-        <span>Syllabus</span>
-        <b>{% if s.topics_total %}{{ s.topics_done }}/{{ s.topics_total }} topics{% else %}no topics yet{% endif %}</b>
+        <span>At lecture</span>
+        <b>{{ p.lectures_done }}{% if p.lectures_planned %} of {{ p.lectures_planned }}{% endif %}</b>
       </div>
-      {{ bar(s.topics_pct) }}
+      {{ bar(p.pct) }}
 
       <div class="metric">
-        <span>Lectures</span>
-        <b>{{ s.held }} held · {{ s.remaining }} left</b>
+        <span>Topics left</span>
+        <b>{% if p.topics_total %}{{ p.topics_left }} of {{ p.topics_total }}{% else %}no syllabus{% endif %}</b>
       </div>
       <div class="submetrics">
-        <span title="attended">✓ {{ s.attended }}</span>
-        <span title="skipped" class="{{ 'bad' if s.skipped }}">✗ {{ s.skipped }}</span>
-        {% if s.attendance_pct is not none %}<span>{{ s.attendance_pct }}% attended</span>{% endif %}
+        {% if p.remaining_plan is not none %}<span>{{ p.remaining_plan }} lectures left in plan</span>{% endif %}
+        {% if p.slack is not none %}
+          <span class="{{ 'bad' if p.slack < 0 else 'good' }}">
+            {{ '%+d'|format(p.slack) }} slack</span>
+        {% endif %}
       </div>
 
       <div class="card-foot">
-        <span class="{{ 'strong' if o.week.left }}">{{ o.week.left }} left this week</span>
-        {% if o.last %}<span class="muted trunc">at: {{ o.last['title'] }}</span>{% endif %}
+        <span class="{{ 'strong' if o.week.left }}">{{ o.week.left }} classes this week</span>
+        <span class="muted">{{ p.lectures_left_calendar }} left overall</span>
       </div>
     </a>
     {% endfor %}

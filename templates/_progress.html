@@ -1,0 +1,85 @@
+{# The primary way progress is recorded. Set the lecture watermark, and the
+   checkboxes it implies come pre-ticked from the handout's own lecture
+   numbering — correct any that are wrong, then save once. #}
+{% macro progress_panel(course, topics, pos, suggest, next_url) %}
+<section class="panel progress-panel">
+  <div class="panel-head">
+    <h2>Where I've got to</h2>
+    {% if pos.pct is not none %}<span class="muted">{{ pos.pct }}% of the syllabus</span>{% endif %}
+  </div>
+
+  <form method="post" action="{{ url_for('course_progress', course_id=course['id']) }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ next_url }}">
+    <input type="hidden" name="topics_submitted" value="1">
+
+    <div class="watermark">
+      <label>Done till lecture
+        <input type="number" name="lectures_done" min="0" max="200"
+               value="{{ course['lectures_done'] or 0 }}"
+               data-suggest-url="{{ url_for('course_suggest', course_id=course['id']) }}">
+      </label>
+      <label class="muted">of
+        <input type="number" name="lectures_planned" min="0" max="200"
+               value="{{ course['lectures_planned'] or pos.lectures_planned or '' }}"
+               placeholder="?" style="width:4.5rem">
+        planned</label>
+      <button class="btn">Save</button>
+    </div>
+
+    <div class="derived">
+      <div><b>{{ pos.remaining_plan if pos.remaining_plan is not none else '—' }}</b><span>lectures left in the plan</span></div>
+      <div><b>{{ pos.lectures_left_calendar }}</b><span>classes left on the timetable</span></div>
+      <div><b>{{ pos.topics_left }}</b><span>topics left</span></div>
+      {% if pos.est_lectures_for_rest is not none %}
+      <div><b>~{{ pos.est_lectures_for_rest }}</b><span>lectures needed for them</span></div>
+      {% endif %}
+    </div>
+
+    {% if pos.slack is not none %}
+      {% if pos.slack < 0 %}
+        <p class="verdict warn">At {{ pos.rate }} topics per lecture, the
+          remaining {{ pos.topics_left }} topics need about
+          {{ pos.est_lectures_for_rest }} lectures but only
+          {{ pos.remaining_plan }} are left — <b>about {{ -pos.slack }} short</b>.</p>
+      {% else %}
+        <p class="verdict ok">At {{ pos.rate }} topics per lecture the remaining
+          {{ pos.topics_left }} topics fit in about {{ pos.est_lectures_for_rest }}
+          lectures, with {{ pos.remaining_plan }} left — <b>{{ pos.slack }} spare</b>.</p>
+      {% endif %}
+    {% elif not pos.topics_total %}
+      <p class="empty">No syllabus loaded for this course, so only lecture counts are tracked.</p>
+    {% elif not course['lectures_done'] %}
+      <p class="empty">Set the lecture you've reached and the topics below tick themselves.</p>
+    {% endif %}
+
+    {% if topics %}
+    <div class="topic-grid" id="topic-grid">
+      {% for t in topics %}
+      <label class="tpick {{ t['status'] }}">
+        <span class="picks">
+          <input type="checkbox" name="done" value="{{ t['id'] }}"
+                 {{ 'checked' if t['status'] == 'done' }} title="Done">
+          <input type="checkbox" name="partial" value="{{ t['id'] }}"
+                 {{ 'checked' if t['status'] == 'partial' }} title="Partly done"
+                 class="half">
+        </span>
+        <span class="tlabel">
+          {% if t['lec_from'] %}<b class="lec">L{{ t['lec_from'] }}{% if t['lec_to'] and t['lec_to'] != t['lec_from'] %}–{{ t['lec_to'] }}{% endif %}</b>
+          {% else %}<b class="lec none" title="No lecture number in the handout">—</b>{% endif %}
+          {% if t['unit'] %}<span class="unit">{{ t['unit'] }}</span>{% endif %}
+          {{ t['title'] | strip_lec }}
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+    <p class="muted small">
+      Left box = done, right = partly done.
+      {% if pos.unnumbered %}{{ pos.unnumbered }} topic{{ 's' if pos.unnumbered != 1 }}
+      have no lecture number in the handout, so the watermark never ticks
+      {{ 'them' if pos.unnumbered != 1 else 'it' }} — tick by hand.{% endif %}
+    </p>
+    {% endif %}
+  </form>
+</section>
+{% endmacro %}

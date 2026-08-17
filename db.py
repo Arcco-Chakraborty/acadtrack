@@ -25,16 +25,20 @@ CREATE TABLE IF NOT EXISTS setting (
   value TEXT NOT NULL
 );
 
+-- lectures_planned: how many lectures the handout's course plan has.
+-- lectures_done:    the watermark — "I have been taught up to lecture N".
 CREATE TABLE IF NOT EXISTS course (
-  id         INTEGER PRIMARY KEY,
-  code       TEXT NOT NULL,
-  title      TEXT NOT NULL DEFAULT '',
-  instructor TEXT NOT NULL DEFAULT '',
-  credits    INTEGER,
-  color      TEXT NOT NULL DEFAULT '',
-  position   INTEGER NOT NULL DEFAULT 0,
-  archived   INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
+  id               INTEGER PRIMARY KEY,
+  code             TEXT NOT NULL,
+  title            TEXT NOT NULL DEFAULT '',
+  instructor       TEXT NOT NULL DEFAULT '',
+  credits          INTEGER,
+  color            TEXT NOT NULL DEFAULT '',
+  position         INTEGER NOT NULL DEFAULT 0,
+  archived         INTEGER NOT NULL DEFAULT 0,
+  created_at       TEXT NOT NULL,
+  lectures_planned INTEGER,
+  lectures_done    INTEGER NOT NULL DEFAULT 0
 );
 
 -- One weekly recurring meeting. weekday: 0=Mon .. 6=Sun.
@@ -74,6 +78,9 @@ CREATE TABLE IF NOT EXISTS lecture (
 CREATE INDEX IF NOT EXISTS lecture_date_idx ON lecture(date);
 CREATE INDEX IF NOT EXISTS lecture_course_idx ON lecture(course_id, date);
 
+-- lec_from / lec_to are the handout's own lecture numbering ("L9-14" -> 9, 14).
+-- They are what lets "I'm done till lecture N" resolve to a set of topics
+-- without anyone tagging lectures by hand.
 CREATE TABLE IF NOT EXISTS topic (
   id        INTEGER PRIMARY KEY,
   course_id INTEGER NOT NULL REFERENCES course(id) ON DELETE CASCADE,
@@ -81,7 +88,9 @@ CREATE TABLE IF NOT EXISTS topic (
   unit      TEXT NOT NULL DEFAULT '',
   position  INTEGER NOT NULL DEFAULT 0,
   status    TEXT NOT NULL DEFAULT 'pending',   -- pending|partial|done
-  note      TEXT NOT NULL DEFAULT ''
+  note      TEXT NOT NULL DEFAULT '',
+  lec_from  INTEGER,
+  lec_to    INTEGER
 );
 CREATE INDEX IF NOT EXISTS topic_course_idx ON topic(course_id, position);
 
@@ -115,8 +124,22 @@ def connect(path: str) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after the first release. SQLite has no "ADD COLUMN IF NOT
+# EXISTS", so they are applied by inspecting the table.
+MIGRATIONS = [
+    ("topic", "lec_from", "INTEGER"),
+    ("topic", "lec_to", "INTEGER"),
+    ("course", "lectures_planned", "INTEGER"),
+    ("course", "lectures_done", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
 def init(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    for table, column, decl in MIGRATIONS:
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
     for k, v in DEFAULT_SETTINGS.items():
         conn.execute("INSERT OR IGNORE INTO setting (key, value) VALUES (?, ?)",
                      (k, v))
@@ -196,7 +219,7 @@ def create_course(conn, code: str, title: str = "", instructor: str = "",
 
 def update_course(conn, course_id: int, **fields) -> None:
     allowed = {"code", "title", "instructor", "credits", "color", "position",
-               "archived"}
+               "archived", "lectures_planned", "lectures_done"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return
@@ -333,21 +356,45 @@ def list_topics(conn, course_id: int):
 
 
 def create_topic(conn, course_id: int, title: str, unit: str = "",
-                 position: int | None = None) -> int:
+                 position: int | None = None, lec_from=None, lec_to=None) -> int:
     if position is None:
         row = conn.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM topic "
             "WHERE course_id = ?", (course_id,)).fetchone()
         position = row["p"]
     cur = conn.execute(
-        "INSERT INTO topic (course_id, title, unit, position) VALUES (?, ?, ?, ?)",
-        (course_id, title.strip(), unit.strip(), position))
+        "INSERT INTO topic (course_id, title, unit, position, lec_from, lec_to) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (course_id, title.strip(), unit.strip(), position, lec_from, lec_to))
     conn.commit()
     return cur.lastrowid
 
 
+def set_topic_statuses(conn, course_id: int, done_ids: set[int],
+                       partial_ids: set[int] | None = None) -> None:
+    """Rewrite every topic status for one course in a single transaction.
+
+    This is what the "done till lecture N" form posts: the whole checkbox
+    state, not a diff. Anything not named goes back to pending, so unticking
+    is as easy as ticking.
+    """
+    partial_ids = partial_ids or set()
+    with conn:
+        for t in list_topics(conn, course_id):
+            if t["id"] in done_ids:
+                status = "done"
+            elif t["id"] in partial_ids:
+                status = "partial"
+            else:
+                status = "pending"
+            if status != t["status"]:
+                conn.execute("UPDATE topic SET status = ? WHERE id = ?",
+                             (status, t["id"]))
+
+
 def update_topic(conn, topic_id: int, **fields) -> None:
-    allowed = {"title", "unit", "position", "status", "note"}
+    allowed = {"title", "unit", "position", "status", "note", "lec_from",
+               "lec_to"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return

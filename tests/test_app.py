@@ -222,6 +222,84 @@ def test_shortening_the_semester_retracts_later_classes(client):
     conn.close()
 
 
+def test_watermark_ticks_topics_and_survives_a_reimport(client):
+    """The whole point of the redesign: set 'done till lecture N' once and the
+    topics follow, without touching a single class."""
+    import json
+    payload = {
+        "semester": {"start": "2054-08-03", "end": "2054-11-27"},
+        "courses": [{
+            "code": "DEMO 206", "lectures_planned": 42,
+            "topics": [
+                {"title": "L1-2 Basics", "lec": "1-2"},
+                {"title": "L3 Syntax", "lec": "3"},
+                {"title": "L4-8 Classes", "lec": "4-8"},
+                {"title": "Unnumbered extra"},
+            ],
+        }],
+    }
+    post(client, "/timetable/import", payload=json.dumps(payload))
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 206")["id"]
+    topics = db.list_topics(conn, cid)
+    assert [(t["lec_from"], t["lec_to"]) for t in topics] == [
+        (1, 2), (3, 3), (4, 8), (None, None)]
+
+    # What lecture 5 implies, before committing anything.
+    r = client.get(f"/course/{cid}/suggest?n=5")
+    body = r.get_json()
+    assert body["done"] == [topics[0]["id"], topics[1]["id"]]
+    assert body["partial"] == [topics[2]["id"]]
+    assert body["unnumbered"] == [topics[3]["id"]]
+
+    post(client, f"/course/{cid}/progress", lectures_done="5",
+         topics_submitted="1",
+         done=[str(topics[0]["id"]), str(topics[1]["id"])],
+         partial=str(topics[2]["id"]))
+
+    assert db.get_course(conn, cid)["lectures_done"] == 5
+    after = {t["title"]: t["status"] for t in db.list_topics(conn, cid)}
+    assert after["L1-2 Basics"] == "done"
+    assert after["L4-8 Classes"] == "partial"
+    assert after["Unnumbered extra"] == "pending"
+
+    # Re-importing the corrected syllabus must not reset that progress.
+    post(client, "/timetable/import", payload=json.dumps(payload))
+    assert db.get_course(conn, cid)["lectures_done"] == 5
+    assert {t["title"]: t["status"] for t in db.list_topics(conn, cid)} == after
+    conn.close()
+
+
+def test_strip_lec_removes_only_a_leading_lecture_marker():
+    from app import strip_lec
+    assert strip_lec("L9-14 Abstract classes") == "Abstract classes"
+    assert strip_lec("L3 Java syntax") == "Java syntax"
+    assert strip_lec("L1–2 Basics") == "Basics"            # en dash
+    # Must not eat content that merely starts with a letter+digits, and must
+    # never return an empty string.
+    assert strip_lec("Laplace transform") == "Laplace transform"
+    assert strip_lec("L1.1 First order") == "L1.1 First order"
+    assert strip_lec("Trees and traversal") == "Trees and traversal"
+    assert strip_lec("") == ""
+
+
+def test_progress_without_topics_submitted_only_moves_the_watermark(client):
+    """Posting just the number must not silently clear every topic."""
+    import json
+    post(client, "/timetable/import", payload=json.dumps({
+        "courses": [{"code": "DEMO 209",
+                     "topics": [{"title": "L1 Sets", "lec": "1"}]}]}))
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 209")["id"]
+    tid = db.list_topics(conn, cid)[0]["id"]
+    db.update_topic(conn, tid, status="done")
+
+    post(client, f"/course/{cid}/progress", lectures_done="7")
+    assert db.get_course(conn, cid)["lectures_done"] == 7
+    assert db.list_topics(conn, cid)[0]["status"] == "done"   # untouched
+    conn.close()
+
+
 def test_import_rejects_bad_json_without_500(client):
     r = post(client, "/timetable/import", payload="{not json")
     assert r.status_code == 200

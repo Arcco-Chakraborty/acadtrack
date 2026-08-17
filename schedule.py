@@ -163,6 +163,86 @@ def group_by_day(lectures, week_start: date) -> list[dict]:
     return days
 
 
+def suggest_topics(topics, lectures_done: int) -> dict:
+    """Which topics a 'done till lecture N' watermark implies.
+
+    A topic whose lecture range ends at or before N is done; one that straddles
+    N is partial. Topics with no lecture numbers (a handout that gave modules
+    but no numbering) are left out of the suggestion entirely — guessing at
+    them would silently mark work as covered that may not be.
+
+    Returns {"done": {ids}, "partial": {ids}, "unnumbered": [rows]}.
+    """
+    done, partial, unnumbered = set(), set(), []
+    for t in topics:
+        lo, hi = t["lec_from"], t["lec_to"]
+        if lo is None and hi is None:
+            unnumbered.append(t)
+            continue
+        lo = lo if lo is not None else hi
+        hi = hi if hi is not None else lo
+        if lectures_done >= hi:
+            done.add(t["id"])
+        elif lectures_done >= lo:
+            partial.add(t["id"])
+    return {"done": done, "partial": partial, "unnumbered": unnumbered}
+
+
+def syllabus_position(course, topics, lectures_left_calendar: int) -> dict:
+    """The headline numbers: where the course is, and what is left.
+
+    `lectures_planned` comes from the handout's course plan. `remaining_plan`
+    is how many of those are still to be delivered; `lectures_left_calendar`
+    is how many classes the timetable still has. They answer different
+    questions and can disagree — a course running behind has more calendar
+    slots left than plan lectures.
+    """
+    done_n = course["lectures_done"] or 0
+    planned = course["lectures_planned"]
+    numbered = [t for t in topics if t["lec_from"] or t["lec_to"]]
+
+    # Fall back to the last lecture any topic mentions, so a course whose
+    # planned count was never set still reports something meaningful.
+    if not planned and numbered:
+        planned = max((t["lec_to"] or t["lec_from"]) for t in numbered)
+
+    t_total = len(topics)
+    t_done = sum(1 for t in topics if t["status"] == "done")
+    t_partial = sum(1 for t in topics if t["status"] == "partial")
+    t_left = t_total - t_done
+
+    remaining_plan = max(0, planned - done_n) if planned else None
+    # Topics per lecture, measured on what has actually been covered — a more
+    # honest rate than dividing the syllabus by the lecture count, because the
+    # early lectures of most courses move slower than the plan implies.
+    rate = (t_done + 0.5 * t_partial) / done_n if done_n else None
+    if rate and remaining_plan:
+        est_lectures_for_rest = round(t_left / rate) if rate > 0 else None
+    else:
+        est_lectures_for_rest = None
+
+    return {
+        "lectures_done": done_n,
+        "lectures_planned": planned,
+        "remaining_plan": remaining_plan,
+        "lectures_left_calendar": lectures_left_calendar,
+        "topics_total": t_total,
+        "topics_done": t_done,
+        "topics_partial": t_partial,
+        "topics_left": t_left,
+        "pct": round(100 * (t_done + 0.5 * t_partial) / t_total) if t_total else None,
+        "rate": round(rate, 2) if rate else None,
+        "est_lectures_for_rest": est_lectures_for_rest,
+        # Will the remaining plan lectures cover the remaining topics at the
+        # rate seen so far? Negative means the course has to speed up.
+        "slack": (remaining_plan - est_lectures_for_rest)
+                 if (remaining_plan is not None
+                     and est_lectures_for_rest is not None) else None,
+        "unnumbered": sum(1 for t in topics
+                          if t["lec_from"] is None and t["lec_to"] is None),
+    }
+
+
 def pace(stats: dict) -> dict | None:
     """Is the syllabus keeping up with the calendar? Compares fraction of
     topics done against fraction of lectures held. Returns None when either

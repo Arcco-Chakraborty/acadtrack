@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_macros.html" import bar, lecture_row, status_pill %}
+{% from "_progress.html" import progress_panel %}
 {% block title %}{{ course['code'] }} — acadtrack{% endblock %}
 
 {% block content %}
@@ -14,12 +15,13 @@
     {% endif %}
   </div>
   <div class="counters">
-    <div class="counter big"><b>{{ week.left }}</b><span>left this week</span></div>
-    <div class="counter"><b>{{ stats.remaining }}</b><span>lectures left</span></div>
-    <div class="counter"><b>{{ stats.topics_left }}</b><span>topics left</span></div>
-    {% if pace %}<div class="counter {{ pace.tone }}"><b>{{ pace.label }}</b><span>{{ pace.delta }}% vs calendar</span></div>{% endif %}
+    <div class="counter big"><b>{{ pos.lectures_done }}{% if pos.lectures_planned %}<span class="of">/{{ pos.lectures_planned }}</span>{% endif %}</b><span>lecture reached</span></div>
+    <div class="counter"><b>{{ pos.topics_left }}</b><span>topics left</span></div>
+    <div class="counter"><b>{{ week.left }}</b><span>classes this week</span></div>
   </div>
 </section>
+
+{{ progress_panel(course, topics, pos, suggest, back) }}
 
 <section class="panel stats-panel">
   <div class="statgrid">
@@ -36,45 +38,6 @@
 </section>
 
 <section class="panel">
-  <div class="panel-head">
-    <h2>Syllabus</h2>
-    <span class="muted">{{ stats.topics_done }} done · {{ stats.topics_partial }} partial · {{ stats.topics_left }} left</span>
-  </div>
-  <div class="topics">
-  {% for t in topics %}
-    <div class="topic {{ t['status'] }}">
-      <form method="post" action="{{ url_for('topic_update', topic_id=t['id']) }}" class="topic-status">
-        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-        <input type="hidden" name="next" value="{{ back }}">
-        {% for value, glyph, title in [('pending','○','Not started'),('partial','◐','Partly done'),('done','●','Done')] %}
-          <button name="status" value="{{ value }}" title="{{ title }}"
-                  class="dot {{ 'on' if t['status'] == value }}">{{ glyph }}</button>
-        {% endfor %}
-      </form>
-      <div class="topic-text">
-        {% if t['unit'] %}<span class="unit">{{ t['unit'] }}</span>{% endif %}
-        <span class="tt">{{ t['title'] }}</span>
-      </div>
-      <div class="topic-actions">
-        <form method="post" action="{{ url_for('topic_move', topic_id=t['id']) }}">
-          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-          <input type="hidden" name="next" value="{{ back }}">
-          <button name="dir" value="up" class="icon" title="Move up">↑</button>
-          <button name="dir" value="down" class="icon" title="Move down">↓</button>
-        </form>
-        <form method="post" action="{{ url_for('topic_delete', topic_id=t['id']) }}"
-              onsubmit="return confirm('Delete this topic?')">
-          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-          <input type="hidden" name="next" value="{{ back }}">
-          <button class="icon danger" title="Delete">×</button>
-        </form>
-      </div>
-    </div>
-  {% else %}
-    <p class="empty">No topics yet — paste the handout's course plan below.</p>
-  {% endfor %}
-  </div>
-
   <details class="add-topics" {{ 'open' if not topics }}>
     <summary><b>Add topics</b></summary>
     <form method="post" action="{{ url_for('topic_create', course_id=course['id']) }}">
@@ -89,8 +52,16 @@
   </details>
 </section>
 
+{# Per-class marking is now optional — it exists for attendance/skips, not as
+   the way progress is recorded — so both lists start collapsed. #}
 <section class="panel">
-  <h2>Upcoming</h2>
+  <details>
+    <summary><b>Attendance</b>
+      <span class="muted small">{{ stats.attended }} attended · {{ stats.skipped }} skipped
+        {%- if stats.attendance_pct is not none %} · {{ stats.attendance_pct }}%{% endif %}</span>
+    </summary>
+
+  <h2 style="margin-top:14px">Upcoming</h2>
   {% if upcoming %}
     <div class="lec-list">
     {% for lec in upcoming %}
@@ -98,10 +69,8 @@
     {% endfor %}
     </div>
   {% else %}<p class="empty">Nothing scheduled ahead.</p>{% endif %}
-</section>
 
-<section class="panel">
-  <h2>History</h2>
+  <h2 style="margin-top:18px">History</h2>
   {% if past %}
     <div class="lec-list compact">
     {% for lec in past %}
@@ -109,6 +78,7 @@
     {% endfor %}
     </div>
   {% else %}<p class="empty">No classes yet.</p>{% endif %}
+  </details>
 </section>
 
 <section class="panel">

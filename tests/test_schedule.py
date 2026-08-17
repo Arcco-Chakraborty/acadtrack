@@ -97,6 +97,74 @@ def test_group_by_day_always_returns_seven_buckets():
     assert days[3]["lectures"] == []
 
 
+def TP(id, lo, hi, status="pending"):
+    return {"id": id, "lec_from": lo, "lec_to": hi, "status": status}
+
+
+def test_suggest_topics_marks_finished_ranges_done_and_straddling_partial():
+    topics = [TP(1, 1, 2), TP(2, 3, 3), TP(3, 4, 8), TP(4, 9, 14)]
+    s = sch.suggest_topics(topics, 5)
+    assert s["done"] == {1, 2}          # ranges that ended at or before 5
+    assert s["partial"] == {3}          # 4-8 straddles 5
+    assert 4 not in s["done"] and 4 not in s["partial"]
+
+
+def test_suggest_topics_never_guesses_at_unnumbered_topics():
+    """A handout that gave modules but no lecture numbers must not have its
+    topics silently marked covered."""
+    topics = [TP(1, 1, 2), TP(2, None, None), TP(3, None, None)]
+    s = sch.suggest_topics(topics, 40)
+    assert s["done"] == {1}
+    assert [t["id"] for t in s["unnumbered"]] == [2, 3]
+
+
+def test_suggest_topics_at_zero_marks_nothing():
+    s = sch.suggest_topics([TP(1, 1, 2), TP(2, 3, 3)], 0)
+    assert s["done"] == set() and s["partial"] == set()
+
+
+def C(done, planned):
+    return {"lectures_done": done, "lectures_planned": planned}
+
+
+def test_syllabus_position_projects_from_the_observed_rate():
+    # 10 lectures in, 5 of 20 topics done -> 0.5 topics/lecture.
+    topics = [TP(i, i, i, "done" if i <= 5 else "pending") for i in range(1, 21)]
+    p = sch.syllabus_position(C(10, 42), topics, lectures_left_calendar=60)
+
+    assert p["remaining_plan"] == 32
+    assert p["topics_left"] == 15
+    assert p["rate"] == 0.5
+    assert p["est_lectures_for_rest"] == 30     # 15 topics / 0.5
+    assert p["slack"] == 2                      # 32 planned - 30 needed
+    assert p["lectures_left_calendar"] == 60
+
+
+def test_syllabus_position_flags_a_course_that_must_speed_up():
+    # 20 lectures in, only 5 of 40 topics done -> 0.25/lecture, 35 left.
+    topics = [TP(i, i, i, "done" if i <= 5 else "pending") for i in range(1, 41)]
+    p = sch.syllabus_position(C(20, 42), topics, 40)
+    assert p["est_lectures_for_rest"] == 140
+    assert p["slack"] == 22 - 140                # deeply negative
+    assert p["slack"] < 0
+
+
+def test_syllabus_position_before_any_lecture_reports_no_estimate():
+    topics = [TP(1, 1, 2), TP(2, 3, 4)]
+    p = sch.syllabus_position(C(0, 42), topics, 50)
+    assert p["rate"] is None
+    assert p["est_lectures_for_rest"] is None
+    assert p["slack"] is None
+    assert p["remaining_plan"] == 42
+
+
+def test_syllabus_position_infers_planned_count_from_topic_numbering():
+    topics = [TP(1, 1, 2), TP(2, 3, 30)]
+    p = sch.syllabus_position(C(5, None), topics, 10)
+    assert p["lectures_planned"] == 30
+    assert p["remaining_plan"] == 25
+
+
 def test_pace_compares_syllabus_against_calendar():
     behind = sch.pace(sch.course_stats(
         [L("attended")] * 8 + [L("scheduled", "2099-01-01")] * 2,

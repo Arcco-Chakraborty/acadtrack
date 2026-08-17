@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 from datetime import date, timedelta
 
@@ -82,7 +83,22 @@ def create_app(db_path: str | None = None) -> Flask:
     app.jinja_env.globals.update(
         WEEKDAYS=sch.WEEKDAYS, KINDS=sch.KINDS, fmt_time=sch.fmt_time,
         csrf_token=lambda: _csrf_token())
+    app.jinja_env.filters["strip_lec"] = strip_lec
     return app
+
+
+_LEAD_LEC = re.compile(r"^\s*L\s*\d{1,3}(\s*[-–]\s*L?\s*\d{1,3})?\s*[:.]?\s+",
+                       re.IGNORECASE)
+
+
+def strip_lec(title: str) -> str:
+    """Drop a leading 'L9-14 ' from a topic title.
+
+    The titles carry it because that is how the handouts write them, but the UI
+    already shows the range in its own column — printing it twice reads as a
+    mistake. The stored title keeps it, so re-importing still matches.
+    """
+    return _LEAD_LEC.sub("", title or "", count=1) or title
 
 
 # ------------------------------------------------------------------- CSRF --
@@ -171,6 +187,7 @@ def _course_overview(conn, today: date) -> list[dict]:
         out.append({
             "course": course,
             "stats": stats,
+            "pos": sch.syllabus_position(course, topics, stats["remaining"]),
             "week": sch.week_summary(lectures, week_start, today),
             "pace": sch.pace(stats),
             "last": db.last_covered(conn, course["id"]),
@@ -284,9 +301,11 @@ def register_routes(app: Flask) -> None:
         topics = db.list_topics(conn, course_id)
         stats = sch.course_stats(lectures, topics, today)
         week_start, _ = sch.week_bounds(today)
+        pos = sch.syllabus_position(course, topics, stats["remaining"])
         return render_template(
             "course.html", course=course, topics=topics, lectures=lectures,
-            stats=stats, pace=sch.pace(stats), today=today,
+            stats=stats, pace=sch.pace(stats), today=today, pos=pos,
+            suggest=sch.suggest_topics(topics, course["lectures_done"] or 0),
             slots=db.list_slots(conn, course_id),
             last=db.last_covered(conn, course_id),
             week=sch.week_summary(lectures, week_start, today),
@@ -387,6 +406,52 @@ def register_routes(app: Flask) -> None:
             added += 1
         flash(f"{added} topic{'s' if added != 1 else ''} added.", "ok")
         return _back("courses")
+
+    @app.route("/course/<int:course_id>/progress", methods=["POST"])
+    @login_required
+    def course_progress(course_id: int):
+        """The main way progress is recorded: 'done till lecture N', plus the
+        topic checkboxes that N suggested (and the owner corrected)."""
+        conn = app.config["GET_CONN"]()
+        if db.get_course(conn, course_id) is None:
+            abort(404)
+        fields = {}
+        n = _int(request.form.get("lectures_done"))
+        if n is not None:
+            fields["lectures_done"] = max(0, n)
+        planned = _int(request.form.get("lectures_planned"))
+        if planned is not None:
+            fields["lectures_planned"] = max(0, planned) or None
+        if fields:
+            db.update_course(conn, course_id, **fields)
+
+        # Absent `topics_submitted` the form only moved the watermark, so the
+        # existing topic states must be left alone rather than all cleared.
+        if request.form.get("topics_submitted"):
+            done = {_int(t) for t in request.form.getlist("done")}
+            partial = {_int(t) for t in request.form.getlist("partial")}
+            db.set_topic_statuses(conn, course_id,
+                                  {d for d in done if d},
+                                  {p for p in partial if p} - done)
+        flash("Progress saved.", "ok")
+        return _back("courses")
+
+    @app.route("/course/<int:course_id>/suggest")
+    @login_required
+    def course_suggest(course_id: int):
+        """Preview what a watermark would tick, without committing it."""
+        conn = app.config["GET_CONN"]()
+        course = db.get_course(conn, course_id)
+        if course is None:
+            abort(404)
+        topics = db.list_topics(conn, course_id)
+        n = _int(request.args.get("n"))
+        if n is None:
+            n = course["lectures_done"] or 0
+        s = sch.suggest_topics(topics, n)
+        return {"n": n, "done": sorted(s["done"]),
+                "partial": sorted(s["partial"]),
+                "unnumbered": [t["id"] for t in s["unnumbered"]]}
 
     @app.route("/topic/<int:topic_id>", methods=["POST"])
     @login_required
@@ -641,6 +706,9 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
                              instructor=str(entry.get("instructor")
                                             or course["instructor"]),
                              credits=_int(entry.get("credits")) or course["credits"])
+        if entry.get("lectures_planned"):
+            db.update_course(conn, cid,
+                             lectures_planned=_int(entry["lectures_planned"]))
             if replace:
                 for s in db.list_slots(conn, cid):
                     db.delete_slot(conn, s["id"])
@@ -665,16 +733,56 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
 
         # Match slots' behaviour: re-importing a corrected syllabus must not
         # append a second copy of every topic.
-        have_topics = {t["title"].strip().lower()
+        have_topics = {t["title"].strip().lower(): t
                        for t in db.list_topics(conn, cid)}
         for t in entry.get("topics", []):
             title = t if isinstance(t, str) else str(t.get("title", ""))
             unit = "" if isinstance(t, str) else str(t.get("unit", ""))
-            if title.strip() and title.strip().lower() not in have_topics:
-                db.create_topic(conn, cid, title, unit)
-                have_topics.add(title.strip().lower())
+            lo = hi = None
+            if isinstance(t, dict):
+                lo, hi = parse_lec_range(t.get("lec", ""))
+                lo = _int(t.get("lec_from")) if t.get("lec_from") else lo
+                hi = _int(t.get("lec_to")) if t.get("lec_to") else hi
+            if lo is None and hi is None:      # else infer from "L9-14 ..."
+                lo, hi = parse_lec_range(title)
+                if lo is None:
+                    lo, hi = parse_lec_range(unit)
+            key = title.strip().lower()
+            if not key:
+                continue
+            existing = have_topics.get(key)
+            if existing is None:
+                db.create_topic(conn, cid, title, unit, lec_from=lo, lec_to=hi)
                 counts["topics"] += 1
+            elif (lo, hi) != (existing["lec_from"], existing["lec_to"]):
+                # Correcting the numbering must not require deleting topics,
+                # which would take their done/partial state with them.
+                db.update_topic(conn, existing["id"], lec_from=lo, lec_to=hi)
+            have_topics[key] = existing or {"id": None}
     return counts
+
+
+_LEC_RE = re.compile(r"^\s*L?\s*(\d{1,3})\s*(?:[-–]\s*L?\s*(\d{1,3}))?\s*$",
+                     re.IGNORECASE)
+
+
+def parse_lec_range(text) -> tuple:
+    """'9-14' / 'L9-14' / 'L3' -> (9, 14) / (9, 14) / (3, 3).
+
+    Only a bare lecture reference is accepted. A title like 'L1.1 First order
+    equations' deliberately does NOT match: dotted numbering is per-module, not
+    the global lecture count, and reading it as one silently mis-maps the whole
+    syllabus. Those courses carry explicit lec_from/lec_to instead.
+    """
+    if not text:
+        return (None, None)
+    head = str(text).split(None, 1)[0] if " " in str(text) else str(text)
+    m = _LEC_RE.match(head)
+    if not m:
+        return (None, None)
+    lo = int(m.group(1))
+    hi = int(m.group(2)) if m.group(2) else lo
+    return (lo, hi) if lo <= hi else (hi, lo)
 
 
 def _weekday_num(name: str) -> int | None:

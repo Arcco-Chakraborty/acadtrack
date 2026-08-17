@@ -231,6 +231,47 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 5px;
 .icon.danger:hover { color: var(--bad); }
 .add-topics summary { cursor: pointer; font-size: 0.88rem; margin-bottom: 10px; }
 
+/* -------------------------------------------------------------- progress */
+
+.progress-panel { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.counter .of { font-size: 0.95rem; color: var(--muted); }
+
+.watermark { display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+             padding-bottom: 12px; }
+.watermark label { display: flex; gap: 8px; align-items: center; font-size: 0.9rem; }
+.watermark input[type="number"] { width: 5.5rem; font-size: 1.15rem;
+                                  font-weight: 600; text-align: center; }
+
+.derived { display: grid; gap: 10px; margin: 4px 0 12px;
+           grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+.derived > div { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; }
+.derived b { display: block; font-size: 1.4rem; line-height: 1.2; }
+.derived span { font-size: 0.7rem; color: var(--muted); text-transform: uppercase;
+                letter-spacing: 0.05em; }
+
+.verdict { font-size: 0.88rem; padding: 10px 13px; border-radius: 10px;
+           margin: 0 0 12px; }
+.verdict.ok { background: color-mix(in srgb, var(--good) 10%, transparent);
+              border: 1px solid color-mix(in srgb, var(--good) 28%, transparent); }
+.verdict.warn { background: color-mix(in srgb, var(--warn) 10%, transparent);
+                border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
+
+.topic-grid { display: grid; gap: 3px; margin-top: 6px; }
+.tpick { display: grid; grid-template-columns: auto 1fr; gap: 11px;
+         align-items: baseline; padding: 6px 9px; border-radius: 8px;
+         cursor: pointer; border-left: 2px solid transparent; }
+.tpick:hover { background: var(--panel-2); }
+.tpick.done { border-left-color: var(--good); }
+.tpick.partial { border-left-color: var(--warn); }
+.tpick.done .tlabel { color: var(--muted); }
+.picks { display: flex; gap: 4px; }
+.picks input { margin: 0; cursor: pointer; }
+.picks .half { accent-color: var(--warn); }
+.tlabel { font-size: 0.87rem; }
+.lec { display: inline-block; min-width: 3.6rem; font-size: 0.72rem;
+       color: var(--accent); font-variant-numeric: tabular-nums; }
+.lec.none { color: var(--line); }
+
 /* ----------------------------------------------------------------- stats */
 
 .statgrid { display: grid; gap: 12px;
