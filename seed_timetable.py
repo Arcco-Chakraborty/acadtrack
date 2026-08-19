@@ -21,6 +21,11 @@ Shape:
     }
 
 weekday accepts 0-6 (Mon-Sun) or a name. kind is L / T / P.
+
+A top-level "dropped": ["DEMO 210", ...] archives courses you no longer take:
+their history is kept and the archive is reversible, but they disappear from
+the week, the dashboard and the timetable. A course listed under "courses" is
+un-archived, so re-taking one just means putting it back in the file.
 """
 from __future__ import annotations
 
@@ -61,6 +66,7 @@ def main(argv: list[str]) -> int:
         print(f"holidays      : {counts['holidays']}")
         print(f"topics added  : {counts['topics']}")
         print(f"exams         : {counts['exams']}")
+        print(f"dropped       : {counts['dropped']}")
         print(f"classes       : {before} -> {after}")
         if not (start and end):
             print("NOTE: no semester start/end set, so no classes were "

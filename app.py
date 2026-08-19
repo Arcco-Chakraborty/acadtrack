@@ -804,7 +804,7 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
     in place instead of creating a second copy of every course.
     """
     counts = {"courses": 0, "slots": 0, "holidays": 0, "topics": 0,
-              "exams": 0}
+              "exams": 0, "dropped": 0}
     sem = payload.get("semester") or {}
     for key, setting in (("start", "semester_start"), ("end", "semester_end"),
                          ("name", "semester_name")):
@@ -842,7 +842,7 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
             counts["courses"] += 1
         else:
             cid = course["id"]
-            db.update_course(conn, cid,
+            db.update_course(conn, cid, archived=0,
                              title=str(entry.get("title") or course["title"]),
                              instructor=str(entry.get("instructor")
                                             or course["instructor"]),
@@ -918,6 +918,15 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
             db.upsert_exam(conn, cid, label, sch.fmt(d),
                            str(ex.get("session", "")))
             counts["exams"] += 1
+
+    # Courses no longer taken. Archiving rather than deleting keeps their
+    # history and is reversible; every cross-course view already excludes an
+    # archived course, so its classes stop cluttering the week.
+    for code in payload.get("dropped", []):
+        course = db.get_course_by_code(conn, str(code).strip())
+        if course is not None and not course["archived"]:
+            db.update_course(conn, course["id"], archived=1)
+            counts["dropped"] += 1
     return counts
 
 

@@ -334,6 +334,11 @@ def list_lectures(conn, course_id: int | None = None, start: str | None = None,
     if course_id is not None:
         q += " AND l.course_id = ?"
         args.append(course_id)
+    else:
+        # A dropped (archived) course keeps its rows so nothing is lost, but
+        # its classes must not turn up in the week or on the dashboard. Asking
+        # for one course by id still returns them, so its own page still works.
+        q += " AND c.archived = 0"
     if start:
         q += " AND l.date >= ?"
         args.append(start)

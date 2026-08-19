@@ -494,3 +494,76 @@ def test_exam_add_and_delete_roundtrip_and_render(client):
     post(client, f"/exam/{exams[0]['id']}/delete")
     assert db.list_exams(conn, cid) == []
     conn.close()
+
+
+# ---------------------------------------------------------------- archived --
+
+def test_archiving_a_course_hides_its_classes_everywhere(client):
+    """A dropped course keeps its rows, but its classes must vanish from the
+    week and the dashboard -- otherwise a course you no longer take still
+    fills up the timetable."""
+    post(client, "/settings", semester_start="2054-08-03", semester_end="2054-08-31")
+    post(client, "/courses", code="DEMO 203", title="Intro to LLMs")
+    post(client, "/courses", code="DEMO 206", title="OOP")
+    conn = conn_of(client)
+    dropped = db.get_course_by_code(conn, "DEMO 203")["id"]
+    kept = db.get_course_by_code(conn, "DEMO 206")["id"]
+    post(client, f"/course/{dropped}/slots", weekday="0", start_time="14:00",
+         end_time="14:50")
+    post(client, f"/course/{kept}/slots", weekday="0", start_time="09:00",
+         end_time="09:50")
+    assert any(l["code"] == "DEMO 203" for l in db.list_lectures(conn))
+
+    post(client, f"/course/{dropped}/archive", archive="1")
+
+    codes = {l["code"] for l in db.list_lectures(conn)}
+    assert "DEMO 203" not in codes          # gone from every cross-course view
+    assert "DEMO 206" in codes
+    # Its own rows survive, so archiving stays reversible.
+    assert len(db.list_lectures(conn, dropped)) > 0
+    for url in ["/", "/week", "/timetable"]:
+        assert b"DEMO 203" not in client.get(url).data, url
+    # Courses still lists it under Archived -- that is the restore path.
+    assert b"DEMO 203" in client.get("/courses").data
+    conn.close()
+
+
+def test_dropped_courses_are_archived_and_can_come_back(client):
+    """Swapping a course mid-term: the seed file names it under "dropped", the
+    importer archives it, and putting it back under "courses" restores it."""
+    import json
+    post(client, "/settings", semester_start="2054-08-03", semester_end="2054-08-31")
+    post(client, "/timetable/import", payload=json.dumps({"courses": [
+        {"code": "DEMO 203", "title": "Intro to LLMs",
+         "slots": [{"weekday": "Mon", "start": "14:00", "end": "14:50"}]},
+        {"code": "DEMO 202", "title": "Example course subject 50",
+         "slots": [{"weekday": "Mon", "start": "17:00", "end": "17:50"}]}]}))
+    conn = conn_of(client)
+    old = db.get_course_by_code(conn, "DEMO 203")["id"]
+    assert len(db.list_courses(conn)) == 2
+
+    post(client, "/timetable/import", payload=json.dumps(
+        {"dropped": ["DEMO 203"],
+         "courses": [{"code": "DEMO 202"}]}))
+    assert [c["code"] for c in db.list_courses(conn)] == ["DEMO 202"]
+    assert db.get_course(conn, old)["archived"] == 1
+    # Archiving is not deletion: the rows are all still there.
+    assert len(db.list_lectures(conn, old)) > 0
+    assert len(db.list_slots(conn, old)) == 1
+
+    # Re-taking it: listing it under "courses" again brings it back.
+    post(client, "/timetable/import", payload=json.dumps(
+        {"courses": [{"code": "DEMO 203"}]}))
+    assert db.get_course(conn, old)["archived"] == 0
+    assert {c["code"] for c in db.list_courses(conn)} == {"DEMO 202", "DEMO 203"}
+    conn.close()
+
+
+def test_dropping_an_unknown_course_is_a_no_op(client):
+    import json
+    r = post(client, "/timetable/import",
+             payload=json.dumps({"dropped": ["DEMO 214"]}))
+    assert r.status_code == 200
+    conn = conn_of(client)
+    assert db.list_courses(conn, True) == []
+    conn.close()
