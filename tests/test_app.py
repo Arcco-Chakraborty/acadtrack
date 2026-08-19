@@ -567,3 +567,16 @@ def test_dropping_an_unknown_course_is_a_no_op(client):
     conn = conn_of(client)
     assert db.list_courses(conn, True) == []
     conn.close()
+
+
+def test_static_urls_are_cache_busted(client):
+    """nginx caches /static for a week, so a changed stylesheet must arrive on
+    a new URL or an already-visited phone never sees the fix."""
+    import re
+    html = client.get("/").data.decode()
+    css = re.search(r'href="(/static/style\.css[^"]*)"', html)
+    js = re.search(r'src="(/static/app\.js[^"]*)"', html)
+    assert css and "?v=" in css.group(1), css and css.group(1)
+    assert js and "?v=" in js.group(1)
+    # and the stamped URL still serves the file
+    assert client.get(css.group(1)).status_code == 200

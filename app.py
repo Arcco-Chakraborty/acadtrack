@@ -78,6 +78,21 @@ def create_app(db_path: str | None = None) -> Flask:
     # else is allowed to reach gunicorn on 127.0.0.1.
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
+    # nginx serves /static with max-age=604800, so a phone that has visited
+    # once keeps the old CSS for a week and simply never sees a UI fix. Stamp
+    # every static URL with the file's mtime: the HTML is uncached, so a
+    # changed file gets a new URL and is fetched at once, while unchanged ones
+    # stay cached for the full week.
+    @app.url_defaults
+    def _stamp_static(endpoint, values):
+        if endpoint != "static" or "filename" not in values:
+            return
+        path = os.path.join(app.static_folder, values["filename"])
+        try:
+            values["v"] = int(os.stat(path).st_mtime)
+        except OSError:
+            pass
+
     app.register_blueprint(auth_bp)
     register_routes(app)
 

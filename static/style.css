@@ -616,6 +616,12 @@ details summary { cursor: pointer; }
 .cr-code { font-weight: 600; }
 .cr-code:hover { text-decoration: underline;
                  text-decoration-color: var(--accent); }
+/* The whole row opens the course. The code text alone is a ~50px target, which
+   is fine with a mouse and unusable with a thumb -- on a phone the row read as
+   dead. The link is stretched over the row instead; the archive/restore form
+   is lifted above it so its button still takes the tap. */
+.cr-code::after { content: ""; position: absolute; inset: 0; }
+.course-row form { position: relative; z-index: 1; }
 .cr-title { font-size: 0.8rem; color: var(--muted); overflow: hidden;
             text-overflow: ellipsis; white-space: nowrap; }
 .cr-metric > span:first-child { font-size: 0.64rem; text-transform: uppercase;
