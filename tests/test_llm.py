@@ -72,3 +72,14 @@ def test_estimate_with_no_topics_does_not_call_the_model(monkeypatch):
     monkeypatch.setattr(llm, "GeminiBackend",
                         lambda: pytest.fail("should not be called"))
     assert llm.estimate_lecture_ranges("X", "Y", 10, []) == []
+
+
+def test_estimate_rejects_ranges_keyed_to_the_wrong_topics(fake_gemini):
+    """Right count, wrong 'n' keys used to escape as a KeyError."""
+    fake_gemini["reply"] = {"ranges": [
+        {"n": 1, "from": 1, "to": 3},
+        {"n": 2, "from": 4, "to": 6},
+        {"n": 4, "from": 7, "to": 9},        # n=4 for a 3-topic course
+    ]}
+    with pytest.raises(llm.LLMError):
+        llm.estimate_lecture_ranges("X", "Y", 9, ["a", "b", "c"])

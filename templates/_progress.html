@@ -3,10 +3,10 @@
    numbering — correct any that are wrong, then save once. #}
 {% macro progress_panel(course, topics, pos, suggest, next_url,
                         llm_ready=False, estimated=False) %}
-<section class="panel progress-panel">
+<section class="panel progress-panel" style="--accent: {{ course['color'] or '#3987e5' }}">
   <div class="panel-head">
     <h2>Where I've got to</h2>
-    {% if pos.pct is not none %}<span class="muted">{{ pos.pct }}% of the syllabus</span>{% endif %}
+    {% if pos.pct is not none %}<span class="muted small">{{ pos.pct }}% of the syllabus</span>{% endif %}
   </div>
 
   <form method="post" action="{{ url_for('course_progress', course_id=course['id']) }}">
@@ -15,38 +15,42 @@
     <input type="hidden" name="topics_submitted" value="1">
 
     <div class="watermark">
-      <label>Done till lecture
-        <input type="number" name="lectures_done" min="0" max="200"
-               value="{{ course['lectures_done'] or 0 }}"
-               data-suggest-url="{{ url_for('course_suggest', course_id=course['id']) }}">
+      <label class="wm-field">Done till lecture
+        <span class="stepper">
+          <button type="button" class="step js-only" data-step="-1" aria-label="One lecture back"><svg class="i"><use href="#i-chev-l"/></svg></button>
+          <input type="number" name="lectures_done" min="0" max="200" inputmode="numeric"
+                 value="{{ course['lectures_done'] or 0 }}"
+                 data-suggest-url="{{ url_for('course_suggest', course_id=course['id']) }}">
+          <button type="button" class="step js-only" data-step="1" aria-label="One lecture on"><svg class="i"><use href="#i-chev-r"/></svg></button>
+        </span>
       </label>
-      <label class="muted">of
-        <input type="number" name="lectures_planned" min="0" max="200"
+      <label class="wm-field muted">of
+        <input type="number" name="lectures_planned" min="0" max="200" class="wm-planned"
                value="{{ course['lectures_planned'] or pos.lectures_planned or '' }}"
-               placeholder="?" style="width:4.5rem">
+               placeholder="?">
         planned</label>
       <button class="btn">Save</button>
     </div>
 
     <div class="derived">
-      <div><b>{{ pos.remaining_plan if pos.remaining_plan is not none else '—' }}</b><span>lectures left in the plan</span></div>
-      <div><b>{{ pos.lectures_left_calendar }}</b><span>classes left on the timetable</span></div>
-      <div><b>{{ pos.topics_left }}</b><span>topics left</span></div>
+      <div class="tile"><b>{{ pos.remaining_plan if pos.remaining_plan is not none else '—' }}</b><span>lectures left in the plan</span></div>
+      <div class="tile"><b>{{ pos.lectures_left_calendar }}</b><span>classes left on the timetable</span></div>
+      <div class="tile"><b>{{ pos.topics_left }}</b><span>topics left</span></div>
       {% if pos.est_lectures_for_rest is not none %}
-      <div><b>~{{ pos.est_lectures_for_rest }}</b><span>lectures needed for them</span></div>
+      <div class="tile"><b>~{{ pos.est_lectures_for_rest }}</b><span>lectures needed for them</span></div>
       {% endif %}
     </div>
 
     {% if pos.slack is not none %}
       {% if pos.slack < 0 %}
-        <p class="verdict warn">At {{ pos.rate }} topics per lecture, the
+        <p class="verdict warn"><svg class="i"><use href="#i-spark"/></svg><span>At {{ pos.rate }} topics per lecture, the
           remaining {{ pos.topics_left }} topics need about
           {{ pos.est_lectures_for_rest }} lectures but only
-          {{ pos.remaining_plan }} are left — <b>about {{ -pos.slack }} short</b>.</p>
+          {{ pos.remaining_plan }} are left — <b>about {{ -pos.slack }} short</b>.</span></p>
       {% else %}
-        <p class="verdict ok">At {{ pos.rate }} topics per lecture the remaining
+        <p class="verdict ok"><svg class="i"><use href="#i-check"/></svg><span>At {{ pos.rate }} topics per lecture the remaining
           {{ pos.topics_left }} topics fit in about {{ pos.est_lectures_for_rest }}
-          lectures, with {{ pos.remaining_plan }} left — <b>{{ pos.slack }} spare</b>.</p>
+          lectures, with {{ pos.remaining_plan }} left — <b>{{ pos.slack }} spare</b>.</span></p>
       {% endif %}
     {% elif not pos.topics_total %}
       <p class="empty">No syllabus loaded for this course, so only lecture counts are tracked.</p>
@@ -56,25 +60,29 @@
 
     {% if topics %}
     <div class="topic-grid" id="topic-grid">
+      {% set ns = namespace(unit=none) %}
       {% for t in topics %}
+      {% if t['unit'] and t['unit'] != ns.unit %}
+        {% set ns.unit = t['unit'] %}
+        <div class="unit-head">{{ ns.unit }}</div>
+      {% endif %}
       <label class="tpick {{ t['status'] }}">
         <span class="picks">
           <input type="checkbox" name="done" value="{{ t['id'] }}"
-                 {{ 'checked' if t['status'] == 'done' }} title="Done">
+                 {{ 'checked' if t['status'] == 'done' }} title="Done" aria-label="Done">
           <input type="checkbox" name="partial" value="{{ t['id'] }}"
-                 {{ 'checked' if t['status'] == 'partial' }} title="Partly done"
+                 {{ 'checked' if t['status'] == 'partial' }} title="Partly done" aria-label="Partly done"
                  class="half">
         </span>
         <span class="tlabel">
-          {% if t['lec_from'] %}<b class="lec">L{{ t['lec_from'] }}{% if t['lec_to'] and t['lec_to'] != t['lec_from'] %}–{{ t['lec_to'] }}{% endif %}</b>
-          {% else %}<b class="lec none" title="No lecture number in the handout">—</b>{% endif %}
-          {% if t['unit'] %}<span class="unit">{{ t['unit'] }}</span>{% endif %}
-          {{ t['title'] | strip_lec }}
+          {% if t['lec_from'] %}<b class="lecno">L{{ t['lec_from'] }}{% if t['lec_to'] and t['lec_to'] != t['lec_from'] %}–{{ t['lec_to'] }}{% endif %}</b>
+          {% else %}<b class="lecno none" title="No lecture number in the handout">—</b>{% endif %}
+          <span class="ttext">{{ t['title'] | strip_lec }}</span>
         </span>
       </label>
       {% endfor %}
     </div>
-    <p class="muted small">
+    <p class="muted small hint">
       Left box = done, right = partly done.
       {% if estimated %}Lecture ranges here are an <b>AI estimate</b>, not the
       handout — correct any that look wrong.{% endif %}
@@ -94,8 +102,8 @@
         <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
         <input type="hidden" name="next" value="{{ next_url }}">
         <label class="muted small">This handout gives no lecture numbers. Spread
-          <input type="number" name="lectures_planned" min="1" max="200"
-                 value="{{ course['lectures_planned'] or 42 }}" style="width:4.5rem">
+          <input type="number" name="lectures_planned" min="1" max="200" class="wm-planned"
+                 value="{{ course['lectures_planned'] or 42 }}">
           lectures across its {{ topics|length }} topics?</label>
         <button class="btn small ghost">Estimate with AI</button>
       </form>

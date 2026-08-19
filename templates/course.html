@@ -1,34 +1,62 @@
 {% extends "base.html" %}
-{% from "_macros.html" import bar, lecture_row, status_pill %}
+{% from "_macros.html" import meter, lecture_row, status_pill, exam_chip %}
 {% from "_progress.html" import progress_panel %}
 {% block title %}{{ course['code'] }} — acadtrack{% endblock %}
 
 {% block content %}
 {% set back = url_for('course_detail', course_id=course['id']) %}
-<section class="hero" style="--accent: {{ course['color'] or '#7aa2f7' }}">
-  <div>
-    <h1>{{ course['code'] }}</h1>
-    <p class="muted">{{ course['title'] }}{% if course['instructor'] %} · {{ course['instructor'] }}{% endif %}</p>
+<section class="hero course-hero" style="--accent: {{ course['color'] or '#3987e5' }}">
+  <div class="hero-head">
+    <p class="crumb"><a href="{{ url_for('courses') }}">Courses</a> <svg class="i"><use href="#i-chev-r"/></svg></p>
+    <h1><span class="cdot big" aria-hidden="true"></span>{{ course['code'] }}</h1>
+    <p class="muted">{{ course['title'] }}{% if course['instructor'] %} · {{ course['instructor'] }}{% endif %}{% if course['credits'] %} · {{ course['credits'] }} cr{% endif %}</p>
     {% if last %}
-      <p class="lastdone">Done till: <b>{{ last['title'] }}</b>
-        <span class="muted">({{ last['unit'] or 'topic' }}, {{ last['date'] }})</span></p>
+      <p class="lastdone">Last covered: <b>{{ last['title'] | strip_lec }}</b>
+        <span class="muted">({{ last['date'] }})</span></p>
     {% endif %}
   </div>
-  <div class="counters">
-    <div class="counter big"><b>{{ pos.lectures_done }}{% if pos.lectures_planned %}<span class="of">/{{ pos.lectures_planned }}</span>{% endif %}</b><span>lecture reached</span></div>
-    <div class="counter"><b>{{ pos.topics_left }}</b><span>topics left</span></div>
-    <div class="counter"><b>{{ week.left }}</b><span>classes this week</span></div>
+  <div class="hero-side">
+    {% if pos.pct is not none %}
+    <div class="ring" style="--p: {{ pos.pct }}" role="img" aria-label="{{ pos.pct }}% of the syllabus done">
+      <b>{{ pos.pct }}<i>%</i></b><span>syllabus</span>
+    </div>
+    {% endif %}
+    <div class="tiles">
+      <div class="tile"><b>{{ pos.lectures_done }}{% if pos.lectures_planned %}<i>/{{ pos.lectures_planned }}</i>{% endif %}</b><span>lecture reached</span></div>
+      <div class="tile"><b>{{ pos.topics_left }}</b><span>topics left</span></div>
+      <div class="tile"><b>{{ week.left }}</b><span>this week</span></div>
+      {% if stats.attendance_pct is not none %}
+      <div class="tile {{ 'is-bad' if stats.attendance_pct < 75 }}"><b>{{ stats.attendance_pct }}<i>%</i></b><span>attendance</span></div>
+      {% endif %}
+    </div>
   </div>
 </section>
 
 {{ progress_panel(course, topics, pos, suggest, back,
                   llm_ready=llm_ready, estimated=estimated) }}
 
-<section class="panel stats-panel">
+{% if exams %}
+<section class="panel">
+  <div class="panel-head"><h2><svg class="i h-i"><use href="#i-award"/></svg> Exams</h2></div>
+  <div class="exam-list wide">
+    {% for e in exams %}
+      {% call exam_chip(e, show_course=False) %}
+        <form method="post" action="{{ url_for('exam_delete', exam_id=e['id']) }}" class="exam-del">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="next" value="{{ back }}">
+          <button class="icon-btn danger" title="Remove exam" aria-label="Remove {{ e['label'] }}"><svg class="i"><use href="#i-trash"/></svg></button>
+        </form>
+      {% endcall %}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="panel">
   <div class="statgrid">
-    <div><span>Syllabus</span><b>{{ stats.topics_done }}/{{ stats.topics_total }}</b>{{ bar(stats.topics_pct) }}</div>
-    <div><span>Attendance</span><b>{% if stats.attendance_pct is not none %}{{ stats.attendance_pct }}%{% else %}—{% endif %}</b>{{ bar(stats.attendance_pct) }}</div>
-    <div><span>Held</span><b>{{ stats.held }}</b><span class="muted">of {{ stats.lectures_total }}</span></div>
+    <div><span>Syllabus</span><b>{{ stats.topics_done }}<i>/{{ stats.topics_total }}</i></b>{{ meter(stats.topics_pct) }}</div>
+    <div><span>Attendance</span><b>{% if stats.attendance_pct is not none %}{{ stats.attendance_pct }}<i>%</i>{% else %}—{% endif %}</b>{{ meter(stats.attendance_pct) }}</div>
+    <div><span>Held</span><b>{{ stats.held }}<i> of {{ stats.lectures_total }}</i></b></div>
     <div><span>Attended</span><b class="good">{{ stats.attended }}</b></div>
     <div><span>Skipped</span><b class="{{ 'bad' if stats.skipped }}">{{ stats.skipped }}</b></div>
     <div><span>Cancelled</span><b>{{ stats.cancelled }}</b></div>
@@ -40,7 +68,8 @@
 
 <section class="panel">
   <details class="add-topics" {{ 'open' if not topics }}>
-    <summary><b>Add topics</b></summary>
+    <summary class="sum-line"><svg class="i"><use href="#i-plus"/></svg><b>Add topics</b>
+      <span class="muted small">paste the whole syllabus, one per line</span></summary>
     <form method="post" action="{{ url_for('topic_create', course_id=course['id']) }}">
       <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
       <input type="hidden" name="next" value="{{ back }}">
@@ -53,16 +82,16 @@
   </details>
 </section>
 
-{# Per-class marking is now optional — it exists for attendance/skips, not as
-   the way progress is recorded — so both lists start collapsed. #}
+{# Per-class marking is optional — it exists for attendance/skips, not as the
+   way progress is recorded — so the lists start collapsed. #}
 <section class="panel">
   <details>
-    <summary><b>Attendance</b>
+    <summary class="sum-line"><svg class="i"><use href="#i-clock"/></svg><b>Attendance</b>
       <span class="muted small">{{ stats.attended }} attended · {{ stats.skipped }} skipped
         {%- if stats.attendance_pct is not none %} · {{ stats.attendance_pct }}%{% endif %}</span>
     </summary>
 
-  <h2 style="margin-top:14px">Upcoming</h2>
+  <h3>Upcoming</h3>
   {% if upcoming %}
     <div class="lec-list">
     {% for lec in upcoming %}
@@ -71,7 +100,7 @@
     </div>
   {% else %}<p class="empty">Nothing scheduled ahead.</p>{% endif %}
 
-  <h2 style="margin-top:18px">History</h2>
+  <h3>History</h3>
   {% if past %}
     <div class="lec-list compact">
     {% for lec in past %}
@@ -83,18 +112,19 @@
 </section>
 
 <section class="panel">
-  <h2>Timetable slots</h2>
+  <div class="panel-head"><h2>Weekly slots</h2></div>
   <div class="table-ish">
   {% for s in slots %}
     <div class="slot-row">
-      <b>{{ WEEKDAYS[s['weekday']] }}</b>
-      <span>{{ fmt_time(s['start_time']) }} – {{ fmt_time(s['end_time']) }}</span>
-      <span class="kind">{{ KINDS.get(s['kind'], s['kind']) }}</span>
-      <span class="muted">{{ s['room'] }} {{ s['label'] }}</span>
-      <form method="post" action="{{ url_for('slot_delete', slot_id=s['id']) }}">
+      <b class="slot-day">{{ WEEKDAYS[s['weekday']] }}</b>
+      <span class="slot-time">{{ fmt_time(s['start_time']) }} – {{ fmt_time(s['end_time']) }}</span>
+      <span class="kind {{ s['kind'] }}">{{ KINDS.get(s['kind'], s['kind']) }}</span>
+      <span class="muted">{% if s['room'] %}<svg class="i"><use href="#i-pin"/></svg> {{ s['room'] }}{% endif %} {{ s['label'] }}</span>
+      <form method="post" action="{{ url_for('slot_delete', slot_id=s['id']) }}"
+            onsubmit="return confirm('Remove this weekly slot and its future unmarked classes?')">
         <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
         <input type="hidden" name="next" value="{{ back }}">
-        <button class="icon danger" title="Remove slot">×</button>
+        <button class="icon-btn danger" title="Remove slot" aria-label="Remove slot"><svg class="i"><use href="#i-trash"/></svg></button>
       </form>
     </div>
   {% else %}<p class="empty">No weekly slots.</p>{% endfor %}
@@ -103,29 +133,38 @@
   <form method="post" action="{{ url_for('slot_create', course_id=course['id']) }}" class="row-form">
     <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
     <input type="hidden" name="next" value="{{ back }}">
-    <select name="weekday">
+    <select name="weekday" aria-label="Weekday">
       {% for i in range(7) %}<option value="{{ i }}">{{ WEEKDAYS[i] }}</option>{% endfor %}
     </select>
     <input type="time" name="start_time" value="09:00" required>
     <input type="time" name="end_time" value="10:00" required>
-    <select name="kind">{% for k, label in KINDS.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select>
-    <input name="room" placeholder="Room" style="width:7rem">
-    <input name="label" placeholder="Slot" style="width:5rem">
+    <select name="kind" aria-label="Kind">{% for k, label in KINDS.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select>
+    <input name="room" placeholder="Room" class="w-room">
+    <input name="label" placeholder="Slot" class="w-slot">
     <button class="btn">Add slot</button>
+  </form>
+
+  <form method="post" action="{{ url_for('exam_add', course_id=course['id']) }}" class="row-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ back }}">
+    <input name="label" placeholder="Exam (Midsem, Quiz 1…)" required>
+    <input type="date" name="date" required>
+    <input name="session" placeholder="FN / AN / time" class="w-slot">
+    <button class="btn ghost">Add exam</button>
   </form>
 </section>
 
 <section class="panel">
   <details>
-    <summary><b>Edit course</b></summary>
+    <summary class="sum-line"><svg class="i"><use href="#i-edit"/></svg><b>Edit course</b></summary>
     <form method="post" action="{{ url_for('course_edit', course_id=course['id']) }}" class="row-form">
       <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
       <input type="hidden" name="next" value="{{ back }}">
-      <input name="code" value="{{ course['code'] }}" required>
-      <input name="title" value="{{ course['title'] }}">
-      <input name="instructor" value="{{ course['instructor'] }}">
-      <input name="credits" type="number" value="{{ course['credits'] or '' }}" style="width:5rem">
-      <input name="color" type="color" value="{{ course['color'] or '#7aa2f7' }}">
+      <input name="code" value="{{ course['code'] }}" required aria-label="Code">
+      <input name="title" value="{{ course['title'] }}" aria-label="Title">
+      <input name="instructor" value="{{ course['instructor'] }}" aria-label="Instructor">
+      <input name="credits" type="number" value="{{ course['credits'] or '' }}" class="w-cr" aria-label="Credits">
+      <input name="color" type="color" value="{{ course['color'] or '#3987e5' }}" title="Course colour">
       <button class="btn">Save</button>
     </form>
     <form method="post" action="{{ url_for('course_delete', course_id=course['id']) }}"

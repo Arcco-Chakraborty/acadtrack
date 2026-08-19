@@ -177,3 +177,15 @@ def test_pace_compares_syllabus_against_calendar():
     assert ahead["label"] == "ahead"
 
     assert sch.pace(sch.course_stats([], [], date(2054, 8, 17))) is None
+
+
+def test_syllabus_position_still_warns_when_the_plan_is_exhausted():
+    """remaining_plan == 0 with topics left must read as a shortfall, not as
+    'nothing to report' -- the old gating hid the estimate exactly then."""
+    topics = [TP(i, i, i, "done" if i <= 10 else "pending")
+              for i in range(1, 21)]
+    p = sch.syllabus_position(C(42, 42), topics, 0)
+    assert p["remaining_plan"] == 0
+    assert p["est_lectures_for_rest"] is not None
+    assert p["est_lectures_for_rest"] > 0
+    assert p["slack"] == -p["est_lectures_for_rest"]

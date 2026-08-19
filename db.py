@@ -60,6 +60,17 @@ CREATE TABLE IF NOT EXISTS holiday (
   label TEXT NOT NULL DEFAULT ''
 );
 
+-- One exam sitting for a course. `session` is whatever the institute timetable
+-- says (FN1, AN, a time) -- it is displayed, never parsed.
+CREATE TABLE IF NOT EXISTS exam (
+  id        INTEGER PRIMARY KEY,
+  course_id INTEGER NOT NULL REFERENCES course(id) ON DELETE CASCADE,
+  label     TEXT NOT NULL,                 -- 'Midsem', 'Compre', 'Quiz 1'
+  date      TEXT NOT NULL,                 -- 'YYYY-MM-DD'
+  session   TEXT NOT NULL DEFAULT '',
+  UNIQUE (course_id, label)
+);
+
 -- A materialised occurrence of a slot on a date. Rows are generated from
 -- slot x semester dates and carry the status, so regeneration must never
 -- destroy one that has been marked.
@@ -280,12 +291,45 @@ def delete_holiday(conn, holiday_id: int) -> None:
     conn.commit()
 
 
+# ------------------------------------------------------------------ exams --
+
+def list_exams(conn, course_id: int | None = None):
+    if course_id is not None:
+        return conn.execute(
+            "SELECT e.*, c.code, c.color FROM exam e "
+            "JOIN course c ON c.id = e.course_id WHERE e.course_id = ? "
+            "ORDER BY e.date, e.session", (course_id,)).fetchall()
+    return conn.execute(
+        "SELECT e.*, c.code, c.color FROM exam e "
+        "JOIN course c ON c.id = e.course_id WHERE c.archived = 0 "
+        "ORDER BY e.date, e.session, c.code").fetchall()
+
+
+def upsert_exam(conn, course_id: int, label: str, date: str,
+                session: str = "") -> None:
+    """One row per (course, label): re-importing corrected dates updates in
+    place, the same guarantee slots and topics already have."""
+    conn.execute(
+        "INSERT INTO exam (course_id, label, date, session) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(course_id, label) DO UPDATE SET "
+        "date = excluded.date, session = excluded.session",
+        (course_id, label.strip(), date, session.strip()))
+    conn.commit()
+
+
+def delete_exam(conn, exam_id: int) -> None:
+    conn.execute("DELETE FROM exam WHERE id = ?", (exam_id,))
+    conn.commit()
+
+
 # --------------------------------------------------------------- lectures --
 
 def list_lectures(conn, course_id: int | None = None, start: str | None = None,
                   end: str | None = None):
-    q = ("SELECT l.*, c.code, c.title, c.color FROM lecture l "
-         "JOIN course c ON c.id = l.course_id WHERE 1=1")
+    q = ("SELECT l.*, c.code, c.title, c.color, s.room AS room, "
+         "s.label AS slot_label FROM lecture l "
+         "JOIN course c ON c.id = l.course_id "
+         "LEFT JOIN slot s ON s.id = l.slot_id WHERE 1=1")
     args: list = []
     if course_id is not None:
         q += " AND l.course_id = ?"
@@ -338,11 +382,14 @@ def delete_lecture(conn, lecture_id: int) -> None:
 
 def delete_untouched_lectures(conn, course_id: int, on_or_after: str) -> int:
     """Drop still-'scheduled' future occurrences so a timetable edit can be
-    re-materialised. Anything marked attended/skipped/cancelled survives."""
+    re-materialised. Anything marked attended/skipped/cancelled survives, and
+    so does a manually added one-off class (slot_id IS NULL) -- it was never
+    generated from the weekly pattern, so regeneration must not eat it."""
     cur = conn.execute(
         "DELETE FROM lecture WHERE course_id = ? AND date >= ? "
-        "AND status = 'scheduled' AND id NOT IN "
-        "(SELECT lecture_id FROM lecture_topic)", (course_id, on_or_after))
+        "AND status = 'scheduled' AND slot_id IS NOT NULL "
+        "AND id NOT IN (SELECT lecture_id FROM lecture_topic)",
+        (course_id, on_or_after))
     conn.commit()
     return cur.rowcount
 

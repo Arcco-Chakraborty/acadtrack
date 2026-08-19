@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import bar, lecture_row, status_pill %}
+{% from "_macros.html" import meter, lecture_row, exam_chip %}
 {% block title %}Today — acadtrack{% endblock %}
 
 {% block content %}
@@ -11,36 +11,54 @@
 {% endif %}
 
 <section class="hero">
-  <div>
+  <div class="hero-head">
     {# %-d is glibc-only and raises on Windows; strip the zero in Jinja instead. #}
-    <h1>{{ today.strftime('%A, ') }}{{ today.strftime('%d').lstrip('0') }} {{ today.strftime('%B') }}</h1>
+    <h1>{{ today.strftime('%A') }} <span class="hero-date">{{ today.strftime('%d')|int }} {{ today.strftime('%B') }}</span></h1>
     <p class="muted">
-      Week of {{ week_start.strftime('%d %b') }}–{{ week_end.strftime('%d %b') }}
+      {% if sem_name %}{{ sem_name }} · {% endif %}
+      week of {{ week_start.strftime('%d %b') }}–{{ week_end.strftime('%d %b') }}
       {% if week_no %}· teaching week {{ week_no }}{% endif %}
     </p>
   </div>
-  <div class="counters">
-    <div class="counter big"><b>{{ totals.left }}</b><span>classes left this week</span></div>
-    <div class="counter"><b>{{ totals.done }}/{{ totals.total }}</b><span>week done</span></div>
-    <div class="counter"><b>{{ totals.skipped }}</b><span>skipped so far</span></div>
+  <div class="tiles">
+    <div class="tile hero-tile"><b>{{ totals.left }}</b><span>classes left this week</span></div>
+    <div class="tile"><b>{{ totals.done }}<i>/{{ totals.total }}</i></b><span>week done</span></div>
+    <div class="tile {{ 'is-bad' if totals.skipped }}"><b>{{ totals.skipped }}</b><span>skipped so far</span></div>
     {% if totals.unmarked %}
-    <div class="counter warn"><b>{{ totals.unmarked }}</b><span>unmarked past</span></div>
+    <div class="tile is-warn"><b>{{ totals.unmarked }}</b><span>unmarked past</span></div>
     {% endif %}
   </div>
 </section>
 
-<section class="panel">
-  <h2>Today</h2>
+<div class="cols">
+<section class="panel col-main">
+  <div class="panel-head">
+    <h2>Today</h2>
+    {% if today_lectures %}<span class="muted small">{{ today_lectures|length }} class{{ 'es' if today_lectures|length != 1 }}</span>{% endif %}
+  </div>
   {% if today_lectures %}
     <div class="lec-list">
     {% for lec in today_lectures %}
-      {{ lecture_row(lec, url_for('dashboard')) }}
+      {{ lecture_row(lec, url_for('dashboard'), is_next=(lec['id'] == next_id)) }}
     {% endfor %}
     </div>
   {% else %}
-    <p class="empty">Nothing scheduled today.</p>
+    <p class="empty">Nothing scheduled today{% if today.weekday() >= 5 %} — it's the weekend{% endif %}.</p>
   {% endif %}
 </section>
+
+{% if exams %}
+<section class="panel col-side">
+  <div class="panel-head">
+    <h2><svg class="i h-i"><use href="#i-award"/></svg> Exams</h2>
+  </div>
+  <div class="exam-list">
+    {% for e in exams[:8] %}{{ exam_chip(e) }}{% endfor %}
+  </div>
+  {% if exams|length > 8 %}<p class="muted small">{{ exams|length - 8 }} more later in the term.</p>{% endif %}
+</section>
+{% endif %}
+</div>
 
 <section class="panel">
   <div class="panel-head">
@@ -50,37 +68,42 @@
   {% if overview %}
   <div class="cards">
     {% for o in overview %}
-    {% set c = o.course %}{% set s = o.stats %}
+    {% set c = o.course %}{% set p = o.pos %}
     <a class="card" href="{{ url_for('course_detail', course_id=c['id']) }}"
-       style="--accent: {{ c['color'] or '#7aa2f7' }}">
+       style="--accent: {{ c['color'] or '#3987e5' }}">
       <div class="card-head">
+        <span class="cdot" aria-hidden="true"></span>
         <b>{{ c['code'] }}</b>
         {% if o.pace %}<span class="pace {{ o.pace.tone }}">{{ o.pace.label }}</span>{% endif %}
       </div>
       <div class="card-title">{{ c['title'] }}</div>
 
-      {% set p = o.pos %}
       <div class="metric">
         <span>At lecture</span>
-        <b>{{ p.lectures_done }}{% if p.lectures_planned %} of {{ p.lectures_planned }}{% endif %}</b>
+        <b>{{ p.lectures_done }}{% if p.lectures_planned %} <i>of {{ p.lectures_planned }}</i>{% endif %}</b>
       </div>
-      {{ bar(p.pct) }}
-
+      {{ meter(p.pct) }}
       <div class="metric">
         <span>Topics left</span>
-        <b>{% if p.topics_total %}{{ p.topics_left }} of {{ p.topics_total }}{% else %}no syllabus{% endif %}</b>
+        <b>{% if p.topics_total %}{{ p.topics_left }} <i>of {{ p.topics_total }}</i>{% else %}no syllabus{% endif %}</b>
       </div>
+
       <div class="submetrics">
-        {% if p.remaining_plan is not none %}<span>{{ p.remaining_plan }} lectures left in plan</span>{% endif %}
         {% if p.slack is not none %}
-          <span class="{{ 'bad' if p.slack < 0 else 'good' }}">
-            {{ '%+d'|format(p.slack) }} slack</span>
+          <span class="badge {{ 'is-bad' if p.slack < 0 else 'is-good' }}">{{ '%+d'|format(p.slack) }} slack</span>
+        {% endif %}
+        {% if o.exam %}
+          <span class="badge {{ 'is-warn' if o.exam.days <= 21 }}">{{ o.exam.label|lower }} in {{ o.exam.days }}d</span>
         {% endif %}
       </div>
 
       <div class="card-foot">
-        <span class="{{ 'strong' if o.week.left }}">{{ o.week.left }} classes this week</span>
-        <span class="muted">{{ p.lectures_left_calendar }} left overall</span>
+        <span class="{{ 'strong' if o.week.left }}">{{ o.week.left }} this week</span>
+        {% if o.next %}
+          <span>next {{ o.next.wd }} {{ fmt_time(o.next['start_time']) }}</span>
+        {% else %}
+          <span>{{ p.lectures_left_calendar }} left overall</span>
+        {% endif %}
       </div>
     </a>
     {% endfor %}
@@ -99,15 +122,15 @@
   </div>
   <div class="weekstrip">
     {% for day in days %}
-    <div class="day {{ 'is-today' if day.date == today }}">
-      <div class="day-head">{{ day.label }} <span class="muted">{{ day.date.strftime('%d') }}</span></div>
+    <div class="day {{ 'is-today' if day.date == today }} {{ 'is-past' if day.date < today }}">
+      <div class="day-head">{{ day.label }} <b>{{ day.date.strftime('%d')|int }}</b></div>
       {% for lec in day.lectures %}
-        <div class="chip {{ lec['status'] }}" style="--accent: {{ lec['color'] or '#7aa2f7' }}">
+        <div class="chip {{ lec['status'] }}" style="--accent: {{ lec['color'] or '#3987e5' }}">
           <b>{{ lec['code'] }}</b>
           <span>{{ fmt_time(lec['start_time']) }}</span>
         </div>
       {% else %}
-        <div class="chip empty">—</div>
+        <div class="chip free">free</div>
       {% endfor %}
     </div>
     {% endfor %}

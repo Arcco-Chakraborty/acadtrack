@@ -1,50 +1,68 @@
 {# Shared fragments. Every form posts and redirects back to `next`. #}
 
-{% macro bar(pct, tone='') %}
-<div class="bar {{ tone }}"><span style="width: {{ pct or 0 }}%"></span></div>
+{% macro meter(pct, accent=None) %}
+<div class="meter" {% if accent %}style="--accent: {{ accent }}"{% endif %}
+     role="progressbar" aria-valuenow="{{ pct or 0 }}" aria-valuemin="0" aria-valuemax="100">
+  <span style="width: {{ pct or 0 }}%"></span>
+</div>
 {% endmacro %}
 
 {% macro status_pill(status) %}
-<span class="pill {{ status }}">{{ status }}</span>
+{%- if status == 'attended' -%}
+<span class="pill attended"><svg class="i"><use href="#i-check"/></svg>attended</span>
+{%- elif status == 'skipped' -%}
+<span class="pill skipped"><svg class="i"><use href="#i-x"/></svg>skipped</span>
+{%- elif status == 'cancelled' -%}
+<span class="pill cancelled"><svg class="i"><use href="#i-ban"/></svg>cancelled</span>
+{%- endif -%}
 {% endmacro %}
 
+{# Attendance marking: one segmented control, icon + word, state coloured. #}
 {% macro mark_buttons(lecture, next_url) %}
-<form method="post" action="{{ url_for('lecture_status', lecture_id=lecture['id']) }}" class="marks">
+<form method="post" action="{{ url_for('lecture_status', lecture_id=lecture['id']) }}" class="seg">
   <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
   <input type="hidden" name="next" value="{{ next_url }}">
-  {% for value, label, title in [
-       ('attended', 'Attended', 'I went'),
-       ('skipped', 'Skipped', 'It happened, I did not go'),
-       ('cancelled', 'Cancelled', 'Class did not happen'),
-       ('scheduled', 'Clear', 'Unmark')] %}
-    <button name="status" value="{{ value }}" title="{{ title }}"
-            class="mark {{ value }} {{ 'on' if lecture['status'] == value }}">{{ label }}</button>
+  {% for value, icon, label, title in [
+       ('attended', 'check', 'Went', 'I attended this class'),
+       ('skipped', 'x', 'Skip', 'It happened, I did not go'),
+       ('cancelled', 'ban', 'Off', 'The class did not happen'),
+       ('scheduled', 'undo', '', 'Clear the mark')] %}
+    <button name="status" value="{{ value }}" title="{{ title }}" aria-label="{{ title }}"
+            class="seg-btn {{ value }} {{ 'on' if lecture['status'] == value }}">
+      <svg class="i"><use href="#i-{{ icon }}"/></svg>{% if label %}<span>{{ label }}</span>{% endif %}
+    </button>
   {% endfor %}
 </form>
 {% endmacro %}
 
-{% macro lecture_row(lecture, next_url, topics=None, covered=None, show_course=True) %}
-<div class="lec {{ lecture['status'] }}">
-  <div class="lec-when">
+{% macro lecture_row(lecture, next_url, topics=None, covered=None, show_course=True, is_next=False) %}
+<div class="lecrow {{ lecture['status'] }} {{ 'is-next' if is_next }}"
+     style="--accent: {{ lecture['color'] or '#3987e5' }}">
+  <div class="lecrow-when">
     <b>{{ fmt_time(lecture['start_time']) }}</b>
-    <span class="muted">{{ fmt_time(lecture['end_time']) }}</span>
+    <span>{{ fmt_time(lecture['end_time']) }}</span>
   </div>
-  <div class="lec-what">
-    <div class="lec-title">
-      {% if show_course %}<a href="{{ url_for('course_detail', course_id=lecture['course_id']) }}">{{ lecture['code'] }}</a>{% endif %}
-      <span class="kind">{{ KINDS.get(lecture['kind'], lecture['kind']) }}</span>
+  <div class="lecrow-what">
+    <div class="lecrow-title">
+      {% if show_course %}
+        <span class="cdot" aria-hidden="true"></span>
+        <a class="ccode" href="{{ url_for('course_detail', course_id=lecture['course_id']) }}">{{ lecture['code'] }}</a>
+      {% endif %}
+      <span class="kind {{ lecture['kind'] }}">{{ KINDS.get(lecture['kind'], lecture['kind']) }}</span>
+      {% if lecture['room'] %}<span class="room"><svg class="i"><use href="#i-pin"/></svg>{{ lecture['room'] }}</span>{% endif %}
       {{ status_pill(lecture['status']) }}
+      {% if is_next %}<span class="pill next">up next</span>{% endif %}
     </div>
     {% if covered %}
-      <div class="covered">{% for t in covered %}<span class="tag">{{ t['title'] }}</span>{% endfor %}</div>
+      <div class="covered">{% for t in covered %}<span class="tag">{{ t['title'] | strip_lec }}</span>{% endfor %}</div>
     {% endif %}
     {% if lecture['note'] %}<div class="note">{{ lecture['note'] }}</div>{% endif %}
   </div>
-  <div class="lec-actions">
+  <div class="lecrow-actions">
     {{ mark_buttons(lecture, next_url) }}
     {% if topics %}
     <details class="cover">
-      <summary>Covered…</summary>
+      <summary>Covered <svg class="i"><use href="#i-chev-d"/></svg></summary>
       <form method="post" action="{{ url_for('lecture_topics', lecture_id=lecture['id']) }}">
         <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
         <input type="hidden" name="next" value="{{ next_url }}">
@@ -54,7 +72,7 @@
           <label class="{{ 'done' if t['status'] == 'done' }}">
             <input type="checkbox" name="topic_id" value="{{ t['id'] }}"
                    {{ 'checked' if t['id'] in chosen }}>
-            {{ t['title'] }}
+            <span>{{ t['title'] | strip_lec }}</span>
           </label>
         {% endfor %}
         </div>
@@ -63,5 +81,33 @@
     </details>
     {% endif %}
   </div>
+</div>
+{% endmacro %}
+
+{# One exam as a compact card: date block, name, course, how far away. #}
+{% macro exam_chip(e, show_course=True) %}
+{% set d = e['date'] %}
+<div class="exam {{ 'past' if e['days'] is defined and e['days'] < 0
+                    else 'soon' if e['days'] is defined and e['days'] <= 7
+                    else 'near' if e['days'] is defined and e['days'] <= 21 }}"
+     style="--accent: {{ e['color'] or '#3987e5' }}">
+  <div class="exam-date">
+    <b>{{ d[8:]|int }}</b><span>{{ ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d[5:7]|int - 1] }}</span>
+  </div>
+  <div class="exam-what">
+    <b>{{ e['label'] }}</b>
+    <span>
+      {% if show_course %}<span class="cdot" aria-hidden="true"></span>{{ e['code'] }}{% endif %}
+      {% if e['session'] %} · {{ e['session'] }}{% endif %}
+    </span>
+  </div>
+  {% if e['days'] is defined %}
+  <div class="exam-in">
+    {% if e['days'] < 0 %}done{% elif e['days'] == 0 %}<b>today</b>
+    {% elif e['days'] == 1 %}<b>tomorrow</b>
+    {% else %}in <b>{{ e['days'] }}</b> days{% endif %}
+  </div>
+  {% endif %}
+  {% if caller is defined %}{{ caller() }}{% endif %}
 </div>
 {% endmacro %}

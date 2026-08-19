@@ -216,10 +216,10 @@ def syllabus_position(course, topics, lectures_left_calendar: int) -> dict:
     # honest rate than dividing the syllabus by the lecture count, because the
     # early lectures of most courses move slower than the plan implies.
     rate = (t_done + 0.5 * t_partial) / done_n if done_n else None
-    if rate and remaining_plan:
-        est_lectures_for_rest = round(t_left / rate) if rate > 0 else None
-    else:
-        est_lectures_for_rest = None
+    # The estimate depends only on the observed rate. Gating it on lectures
+    # remaining used to hide the shortfall exactly when the plan had run out,
+    # which is when the warning matters most.
+    est_lectures_for_rest = round(t_left / rate) if rate else None
 
     return {
         "lectures_done": done_n,

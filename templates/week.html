@@ -4,18 +4,18 @@
 
 {% block content %}
 <section class="hero">
-  <div>
-    <h1>{{ week_start.strftime('%d %b') }} – {{ week_end.strftime('%d %b') }}</h1>
+  <div class="hero-head">
+    <h1>{{ week_start.strftime('%d')|int }} {{ week_start.strftime('%b') }} – {{ week_end.strftime('%d')|int }} {{ week_end.strftime('%b') }}</h1>
     <p class="muted">{% if week_no %}Teaching week {{ week_no }} · {% endif %}
       {{ summary.done }}/{{ summary.total }} done
       {% if summary.cancelled %}· {{ summary.cancelled }} cancelled{% endif %}</p>
   </div>
-  <div class="counters">
-    <div class="counter big"><b>{{ summary.left }}</b><span>left this week</span></div>
-    <div class="navweek">
-      <a class="btn small ghost" href="{{ url_for('week', start=prev) }}">← Prev</a>
+  <div class="tiles">
+    <div class="tile hero-tile"><b>{{ summary.left }}</b><span>left this week</span></div>
+    <div class="navweek" role="navigation" aria-label="Week">
+      <a class="btn small ghost icon-btn" href="{{ url_for('week', start=prev) }}" title="Previous week" aria-label="Previous week"><svg class="i"><use href="#i-chev-l"/></svg></a>
       <a class="btn small ghost" href="{{ url_for('week') }}">This week</a>
-      <a class="btn small ghost" href="{{ url_for('week', start=next) }}">Next →</a>
+      <a class="btn small ghost icon-btn" href="{{ url_for('week', start=next) }}" title="Next week" aria-label="Next week"><svg class="i"><use href="#i-chev-r"/></svg></a>
     </div>
   </div>
 </section>
@@ -42,21 +42,24 @@
 
 <section class="panel">
   <details>
-    <summary><b>Add a one-off class</b></summary>
+    <summary class="sum-line"><svg class="i"><use href="#i-plus"/></svg><b>Add a one-off class</b>
+      <span class="muted small">a makeup or extra class that is not on the weekly pattern</span></summary>
     <form method="post" action="{{ url_for('lecture_add') }}" class="row-form">
       <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
       <input type="hidden" name="next" value="{{ url_for('week', start=week_start.isoformat()) }}">
-      <select name="course_id" required>
+      <select name="course_id" required aria-label="Course">
         {% for c in courses %}<option value="{{ c['id'] }}">{{ c['code'] }}</option>{% endfor %}
       </select>
       <input type="date" name="date" required value="{{ today.isoformat() }}">
       <input type="time" name="start_time" value="09:00" required>
       <input type="time" name="end_time" value="10:00" required>
-      <select name="kind">
+      <select name="kind" aria-label="Kind">
         {% for k, label in KINDS.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}
       </select>
       <button class="btn">Add</button>
     </form>
+    <p class="muted small">One-off classes survive every schedule rebuild — only the weekly
+      pattern is regenerated.</p>
   </details>
 </section>
 {% endblock %}

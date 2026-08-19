@@ -9,7 +9,7 @@ import json
 import os
 import re
 import secrets
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from flask import (Flask, abort, flash, g, redirect, render_template, request,
                    session, url_for)
@@ -82,7 +82,8 @@ def create_app(db_path: str | None = None) -> Flask:
     register_routes(app)
 
     app.jinja_env.globals.update(
-        WEEKDAYS=sch.WEEKDAYS, KINDS=sch.KINDS, fmt_time=sch.fmt_time,
+        WEEKDAYS=sch.WEEKDAYS, WEEKDAYS_LONG=sch.WEEKDAYS_LONG,
+        KINDS=sch.KINDS, fmt_time=sch.fmt_time, to_min=sch.time_to_minutes,
         csrf_token=lambda: _csrf_token())
     app.jinja_env.filters["strip_lec"] = strip_lec
     return app
@@ -149,15 +150,20 @@ def regenerate(conn, course_id: int | None = None, from_date: date | None = None
     holidays = {h["date"] for h in db.list_holidays(conn)}
     # A holiday added after the schedule was built leaves classes sitting on a
     # day that will not happen, so clear those too — but only unmarked ones.
+    # Both retractions skip manually added one-off classes (slot_id IS NULL):
+    # they were placed by hand -- often deliberately on a holiday or beyond the
+    # pattern -- so only rows the generator itself produced are swept.
     if holidays:
         marks = ",".join("?" * len(holidays))
         conn.execute(
             f"DELETE FROM lecture WHERE date IN ({marks}) AND status = 'scheduled' "
+            f"AND slot_id IS NOT NULL "
             f"AND id NOT IN (SELECT lecture_id FROM lecture_topic)",
             list(holidays))
     # Likewise, shortening the semester must retract the classes beyond it.
     conn.execute(
         "DELETE FROM lecture WHERE (date < ? OR date > ?) AND status = 'scheduled' "
+        "AND slot_id IS NOT NULL "
         "AND id NOT IN (SELECT lecture_id FROM lecture_topic)",
         (sch.fmt(start), sch.fmt(end)))
     conn.commit()
@@ -177,14 +183,41 @@ def regenerate(conn, course_id: int | None = None, from_date: date | None = None
     return made
 
 
+def retire_slot(conn, slot_id: int, from_date: str) -> None:
+    """Delete a slot and the future classes it generated.
+
+    The lecture sweep must run before the slot row goes away: the FK sets
+    lecture.slot_id to NULL on delete, and matching on NULL afterwards would
+    also catch manually added one-off classes. Marked or topic-linked rows
+    survive, as everywhere else.
+    """
+    conn.execute(
+        "DELETE FROM lecture WHERE slot_id = ? AND date >= ? "
+        "AND status = 'scheduled' "
+        "AND id NOT IN (SELECT lecture_id FROM lecture_topic)",
+        (slot_id, from_date))
+    db.delete_slot(conn, slot_id)
+
+
 def _course_overview(conn, today: date) -> list[dict]:
     """Per-course stats plus this week's numbers, for the dashboard cards."""
     week_start, week_end = sch.week_bounds(today)
+    next_exam = {}
+    for e in db.list_exams(conn):            # ordered by date, so first wins
+        if e["date"] >= sch.fmt(today) and e["course_id"] not in next_exam:
+            next_exam[e["course_id"]] = dict(
+                e, days=(sch.parse_date(e["date"]) - today).days)
     out = []
     for course in db.list_courses(conn):
         lectures = db.list_lectures(conn, course["id"])
         topics = db.list_topics(conn, course["id"])
         stats = sch.course_stats(lectures, topics, today)
+        nxt = next((l for l in lectures
+                    if l["date"] >= sch.fmt(today)
+                    and l["status"] == "scheduled"), None)
+        if nxt is not None:
+            d = sch.parse_date(nxt["date"])
+            nxt = dict(nxt, wd=sch.WEEKDAYS[d.weekday()])
         out.append({
             "course": course,
             "stats": stats,
@@ -192,9 +225,8 @@ def _course_overview(conn, today: date) -> list[dict]:
             "week": sch.week_summary(lectures, week_start, today),
             "pace": sch.pace(stats),
             "last": db.last_covered(conn, course["id"]),
-            "next": next((l for l in lectures
-                          if l["date"] >= sch.fmt(today)
-                          and l["status"] == "scheduled"), None),
+            "next": nxt,
+            "exam": next_exam.get(course["id"]),
         })
     return out
 
@@ -230,12 +262,23 @@ def register_routes(app: Flask) -> None:
             "skipped": sum(o["stats"]["skipped"] for o in overview),
             "unmarked": sum(o["stats"]["unmarked_past"] for o in overview),
         }
+        exams = [dict(e, days=(sch.parse_date(e["date"]) - today).days)
+                 for e in db.list_exams(conn) if e["date"] >= sch.fmt(today)]
+        today_lectures = [l for l in lectures if l["date"] == sch.fmt(today)]
+        # Highlight the class happening / coming up next, but only when the
+        # page is being viewed on the real today -- an overridden ?today has
+        # no meaningful "now".
+        now_s = datetime.now().strftime("%H:%M") if today == date.today() else None
+        next_id = next((l["id"] for l in today_lectures
+                        if l["status"] == "scheduled"
+                        and (now_s is None or l["end_time"] > now_s)), None)
         return render_template(
             "dashboard.html", overview=overview, totals=totals,
             days=sch.group_by_day(lectures, week_start), today=today,
             week_start=week_start, week_end=week_end,
             week_no=sch.week_index(sem_start, today),
-            today_lectures=[l for l in lectures if l["date"] == sch.fmt(today)],
+            today_lectures=today_lectures, now_s=now_s, next_id=next_id,
+            exams=exams, sem_name=db.get_setting(conn, "semester_name"),
             configured=bool(sem_start and sem_end))
 
     @app.route("/week")
@@ -303,8 +346,11 @@ def register_routes(app: Flask) -> None:
         stats = sch.course_stats(lectures, topics, today)
         week_start, _ = sch.week_bounds(today)
         pos = sch.syllabus_position(course, topics, stats["remaining"])
+        exams = [dict(e, days=(sch.parse_date(e["date"]) - today).days)
+                 for e in db.list_exams(conn, course_id)]
         return render_template(
             "course.html", course=course, topics=topics, lectures=lectures,
+            exams=exams,
             stats=stats, pace=sch.pace(stats), today=today, pos=pos,
             suggest=sch.suggest_topics(topics, course["lectures_done"] or 0),
             llm_ready=llm.configured(),
@@ -322,12 +368,15 @@ def register_routes(app: Flask) -> None:
     @login_required
     def course_edit(course_id: int):
         conn = app.config["GET_CONN"]()
-        db.update_course(conn, course_id,
-                         code=request.form.get("code", "").strip(),
-                         title=request.form.get("title", "").strip(),
-                         instructor=request.form.get("instructor", "").strip(),
-                         credits=_int(request.form.get("credits")),
-                         color=request.form.get("color", ""))
+        fields = dict(title=request.form.get("title", "").strip(),
+                      instructor=request.form.get("instructor", "").strip(),
+                      credits=_int(request.form.get("credits")),
+                      color=request.form.get("color", ""))
+        # Import matching keys on the code, so blanking it would orphan the
+        # course from every future re-import.
+        if request.form.get("code", "").strip():
+            fields["code"] = request.form["code"].strip()
+        db.update_course(conn, course_id, **fields)
         flash("Course updated.", "ok")
         return _back("courses")
 
@@ -371,18 +420,7 @@ def register_routes(app: Flask) -> None:
     @login_required
     def slot_delete(slot_id: int):
         conn = app.config["GET_CONN"]()
-        row = conn.execute("SELECT course_id FROM slot WHERE id = ?",
-                           (slot_id,)).fetchone()
-        db.delete_slot(conn, slot_id)
-        if row:
-            # Drop the future occurrences this slot produced, keeping any that
-            # were already marked or linked to a topic.
-            conn.execute(
-                "DELETE FROM lecture WHERE course_id = ? AND date >= ? "
-                "AND status = 'scheduled' AND slot_id IS NULL "
-                "AND id NOT IN (SELECT lecture_id FROM lecture_topic)",
-                (row["course_id"], sch.fmt(date.today())))
-            conn.commit()
+        retire_slot(conn, slot_id, sch.fmt(date.today()))
         flash("Slot removed.", "ok")
         return _back("courses")
 
@@ -530,8 +568,10 @@ def register_routes(app: Flask) -> None:
         up = request.form.get("dir") == "up"
         peers = db.list_topics(conn, row["course_id"])
         idx = next((i for i, t in enumerate(peers) if t["id"] == topic_id), None)
+        if idx is None:
+            return _back("courses")
         swap = idx - 1 if up else idx + 1
-        if idx is None or swap < 0 or swap >= len(peers):
+        if swap < 0 or swap >= len(peers):
             return _back("courses")
         db.update_topic(conn, topic_id, position=peers[swap]["position"])
         db.update_topic(conn, peers[swap]["id"], position=row["position"])
@@ -585,11 +625,17 @@ def register_routes(app: Flask) -> None:
         if not cid or not d:
             flash("Pick a course and a date.", "error")
             return _back("week")
-        db.create_lecture(conn, cid, sch.fmt(d),
-                          request.form.get("start_time", "09:00"),
-                          request.form.get("end_time", "10:00"),
-                          request.form.get("kind", "L"))
-        flash("Extra class added.", "ok")
+        start = request.form.get("start_time", "09:00")
+        end = request.form.get("end_time", "10:00")
+        if end <= start:
+            flash("The class has to end after it starts.", "error")
+            return _back("week")
+        made = db.create_lecture(conn, cid, sch.fmt(d), start, end,
+                                 request.form.get("kind", "L"))
+        if made is None:
+            flash("That class is already on the schedule.", "error")
+        else:
+            flash("Extra class added.", "ok")
         return _back("week")
 
     @app.route("/lecture/<int:lecture_id>/delete", methods=["POST"])
@@ -599,6 +645,31 @@ def register_routes(app: Flask) -> None:
         db.delete_lecture(conn, lecture_id)
         return _back("week")
 
+    # -- exams -------------------------------------------------------------
+
+    @app.route("/course/<int:course_id>/exams", methods=["POST"])
+    @login_required
+    def exam_add(course_id: int):
+        conn = app.config["GET_CONN"]()
+        if db.get_course(conn, course_id) is None:
+            abort(404)
+        label = request.form.get("label", "").strip()
+        d = sch.parse_date(request.form.get("date", ""))
+        if not label or not d:
+            flash("An exam needs a name and a date.", "error")
+            return _back("courses")
+        db.upsert_exam(conn, course_id, label, sch.fmt(d),
+                       request.form.get("session", "").strip())
+        flash(f"{label} saved.", "ok")
+        return _back("courses")
+
+    @app.route("/exam/<int:exam_id>/delete", methods=["POST"])
+    @login_required
+    def exam_delete(exam_id: int):
+        conn = app.config["GET_CONN"]()
+        db.delete_exam(conn, exam_id)
+        return _back("courses")
+
     # -- timetable ---------------------------------------------------------
 
     @app.route("/timetable")
@@ -606,13 +677,26 @@ def register_routes(app: Flask) -> None:
     def timetable():
         conn = app.config["GET_CONN"]()
         slots = db.list_slots(conn)
-        times = sorted({s["start_time"] for s in slots},
-                       key=sch.time_to_minutes)
-        grid = {(s["weekday"], s["start_time"]): [] for s in slots}
-        for s in slots:
-            grid[(s["weekday"], s["start_time"])].append(s)
-        return render_template("timetable.html", slots=slots, times=times,
-                               grid=grid, courses=db.list_courses(conn))
+        # A real time grid: columns are days, rows are 5-minute ticks, and a
+        # block spans its actual duration -- a 2-hour practical reads as one.
+        used_days = {s["weekday"] for s in slots}
+        n_days = max([5] + [d + 1 for d in used_days])
+        lo = min([sch.time_to_minutes(s["start_time"]) for s in slots]
+                 or [8 * 60])
+        hi = max([sch.time_to_minutes(s["end_time"]) for s in slots]
+                 or [18 * 60])
+        lo = (lo // 60) * 60
+        hi = ((hi + 59) // 60) * 60
+        blocks = [{
+            "s": s,
+            "col": s["weekday"] + 2,
+            "r1": (sch.time_to_minutes(s["start_time"]) - lo) // 5 + 2,
+            "r2": (sch.time_to_minutes(s["end_time"]) - lo + 4) // 5 + 2,
+        } for s in slots]
+        return render_template(
+            "timetable.html", slots=slots, blocks=blocks, n_days=n_days,
+            ticks=(hi - lo) // 5, lo=lo, hours=list(range(lo, hi, 60)),
+            today_wd=date.today().weekday(), courses=db.list_courses(conn))
 
     @app.route("/timetable/import", methods=["POST"])
     @login_required
@@ -659,6 +743,13 @@ def register_routes(app: Flask) -> None:
     @login_required
     def settings_save():
         conn = app.config["GET_CONN"]()
+        start = sch.parse_date(request.form.get("semester_start", ""))
+        end = sch.parse_date(request.form.get("semester_end", ""))
+        if start and end and end < start:
+            # Accepting this would retract every generated class as
+            # "outside the semester".
+            flash("The semester cannot end before it starts.", "error")
+            return redirect(url_for("settings_page"))
         for key in ("semester_start", "semester_end", "semester_name"):
             if key in request.form:
                 db.set_setting(conn, key, request.form[key].strip())
@@ -675,9 +766,12 @@ def register_routes(app: Flask) -> None:
             flash("Give the date as YYYY-MM-DD.", "error")
             return _back("settings_page")
         db.add_holiday(conn, sch.fmt(d), request.form.get("label", "").strip())
-        # A new holiday must remove the classes already sitting on that day.
+        # A new holiday must remove the pattern classes already sitting on that
+        # day. One-off classes stay: a makeup class is often deliberately
+        # placed on a holiday.
         conn.execute(
             "DELETE FROM lecture WHERE date = ? AND status = 'scheduled' "
+            "AND slot_id IS NOT NULL "
             "AND id NOT IN (SELECT lecture_id FROM lecture_topic)", (sch.fmt(d),))
         conn.commit()
         flash("Holiday added and that day cleared.", "ok")
@@ -709,7 +803,8 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
     Matching is by course code, so re-importing a corrected timetable updates
     in place instead of creating a second copy of every course.
     """
-    counts = {"courses": 0, "slots": 0, "holidays": 0, "topics": 0}
+    counts = {"courses": 0, "slots": 0, "holidays": 0, "topics": 0,
+              "exams": 0}
     sem = payload.get("semester") or {}
     for key, setting in (("start", "semester_start"), ("end", "semester_end"),
                          ("name", "semester_name")):
@@ -751,13 +846,15 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
                              title=str(entry.get("title") or course["title"]),
                              instructor=str(entry.get("instructor")
                                             or course["instructor"]),
-                             credits=_int(entry.get("credits")) or course["credits"])
+                             credits=_int(entry.get("credits")) or course["credits"],
+                             color=str(entry.get("color") or course["color"]))
         if entry.get("lectures_planned"):
             db.update_course(conn, cid,
                              lectures_planned=_int(entry["lectures_planned"]))
-            if replace:
-                for s in db.list_slots(conn, cid):
-                    db.delete_slot(conn, s["id"])
+        if replace:
+            # The old pattern is void, so its future unmarked classes go too.
+            for s in db.list_slots(conn, cid):
+                retire_slot(conn, s["id"], sch.fmt(date.today()))
 
         have = {(s["weekday"], s["start_time"], s["kind"])
                 for s in db.list_slots(conn, cid)}
@@ -798,13 +895,29 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
                 continue
             existing = have_topics.get(key)
             if existing is None:
-                db.create_topic(conn, cid, title, unit, lec_from=lo, lec_to=hi)
+                tid = db.create_topic(conn, cid, title, unit,
+                                      lec_from=lo, lec_to=hi)
                 counts["topics"] += 1
+                # A same-title line later in this payload must see the row
+                # that now exists, not a placeholder it cannot update.
+                have_topics[key] = {"id": tid, "lec_from": lo, "lec_to": hi}
             elif (lo, hi) != (existing["lec_from"], existing["lec_to"]):
                 # Correcting the numbering must not require deleting topics,
                 # which would take their done/partial state with them.
                 db.update_topic(conn, existing["id"], lec_from=lo, lec_to=hi)
-            have_topics[key] = existing or {"id": None}
+                have_topics[key] = {"id": existing["id"],
+                                    "lec_from": lo, "lec_to": hi}
+
+        for ex in entry.get("exams", []):
+            if not isinstance(ex, dict):
+                continue
+            d = sch.parse_date(str(ex.get("date", "")))
+            label = str(ex.get("label", "")).strip()
+            if not d or not label:
+                continue
+            db.upsert_exam(conn, cid, label, sch.fmt(d),
+                           str(ex.get("session", "")))
+            counts["exams"] += 1
     return counts
 
 
@@ -832,10 +945,9 @@ def parse_lec_range(text) -> tuple:
 
 
 def _weekday_num(name: str) -> int | None:
-    n = name.strip()[:3].title()
-    aliases = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5,
-               "Sun": 6, "Tue".title(): 1, "Thr": 3, "Ths": 3}
-    return aliases.get(n)
+    aliases = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Thr": 3, "Ths": 3,
+               "Fri": 4, "Sat": 5, "Sun": 6}
+    return aliases.get(name.strip()[:3].title())
 
 
 app = create_app()

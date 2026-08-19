@@ -3,35 +3,42 @@
 
 {% block content %}
 <section class="hero">
-  <div><h1>Timetable</h1><p class="muted">Your weekly pattern. Everything on the other pages is generated from this.</p></div>
+  <div class="hero-head"><h1>Timetable</h1>
+    <p class="muted">Your weekly pattern. Everything on the other pages is generated from this.</p></div>
 </section>
 
 <section class="panel">
   {% if slots %}
-  <div class="tt-scroll">
-    <table class="tt">
-      <thead>
-        <tr><th></th>{% for i in range(7) %}<th>{{ WEEKDAYS[i] }}</th>{% endfor %}</tr>
-      </thead>
-      <tbody>
-      {% for t in times %}
-        <tr>
-          <th class="tt-time">{{ fmt_time(t) }}</th>
-          {% for d in range(7) %}
-            <td>
-              {% for s in grid.get((d, t), []) %}
-                <a class="tt-cell" href="{{ url_for('course_detail', course_id=s['course_id']) }}"
-                   style="--accent: {{ s['color'] or '#7aa2f7' }}">
-                  <b>{{ s['code'] }}</b>
-                  <span>{{ KINDS.get(s['kind'], s['kind'])[:4] }}{% if s['room'] %} · {{ s['room'] }}{% endif %}</span>
-                </a>
-              {% endfor %}
-            </td>
-          {% endfor %}
-        </tr>
+  <div class="ttwrap">
+    <div class="ttgrid" style="--days: {{ n_days }}; --ticks: {{ ticks }}">
+      <div class="tt-corner"></div>
+      {% for d in range(n_days) %}
+        <div class="tt-dayhead {{ 'is-today' if d == today_wd }}" style="grid-column: {{ d + 2 }}">{{ WEEKDAYS_LONG[d] }}</div>
       {% endfor %}
-      </tbody>
-    </table>
+      {% for d in range(n_days) %}
+        <div class="tt-col {{ 'is-today' if d == today_wd }}" style="grid-column: {{ d + 2 }}; grid-row: 2 / {{ ticks + 2 }}"></div>
+      {% endfor %}
+      {% for m in hours %}
+        <div class="tt-rule" style="grid-row: {{ (m - lo) // 5 + 2 }}"></div>
+        <div class="tt-hour" style="grid-row: {{ (m - lo) // 5 + 2 }} / span 12">{{ fmt_time('%02d:%02d'|format(m // 60, m % 60)) }}</div>
+      {% endfor %}
+      {% for b in blocks %}{% set s = b.s %}
+        <a class="tt-block" href="{{ url_for('course_detail', course_id=s['course_id']) }}"
+           style="--accent: {{ s['color'] or '#3987e5' }}; grid-column: {{ b.col }}; grid-row: {{ b.r1 }} / {{ b.r2 }}">
+          <b>{{ s['code'] }}</b>
+          <span class="tt-kind">{{ KINDS.get(s['kind'], s['kind']) }}{% if s['label'] %} · {{ s['label'] }}{% endif %}</span>
+          <span class="tt-meta">{{ fmt_time(s['start_time']) }}–{{ fmt_time(s['end_time']) }}{% if s['room'] %} · {{ s['room'] }}{% endif %}</span>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="tt-legend">
+    {% for c in courses %}
+    <a href="{{ url_for('course_detail', course_id=c['id']) }}" style="--accent: {{ c['color'] or '#3987e5' }}">
+      <span class="cdot" aria-hidden="true"></span>{{ c['code'] }}
+      <span class="muted">{{ c['title'] }}</span>
+    </a>
+    {% endfor %}
   </div>
   {% else %}
     <p class="empty">Nothing here yet. Paste a timetable below, or add slots on each course page.</p>
@@ -39,36 +46,37 @@
 </section>
 
 <section class="panel">
-  <div class="panel-head">
-    <h2>Import</h2>
-    <span class="muted small">courses, slots, semester dates and topics in one paste</span>
-  </div>
-  <form method="post" action="{{ url_for('timetable_import') }}">
-    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-    <textarea name="payload" rows="14" spellcheck="false" placeholder='{
+  <details {{ 'open' if not slots }}>
+    <summary class="sum-line"><svg class="i"><use href="#i-plus"/></svg><b>Import</b>
+      <span class="muted small">courses, slots, semester dates, topics and exams in one paste</span></summary>
+    <form method="post" action="{{ url_for('timetable_import') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <textarea name="payload" rows="14" spellcheck="false" placeholder='{
   "semester": {"name": "Sem I 2054-27", "start": "2054-08-04", "end": "2054-12-05"},
   "courses": [
     {
       "code": "DEMO 204", "title": "Data Structures & Algorithms",
-      "instructor": "", "credits": 4, "color": "#7aa2f7",
+      "instructor": "", "credits": 4, "color": "#3987e5",
       "slots": [
         {"weekday": "Mon", "start": "09:00", "end": "09:50", "kind": "L", "room": "LT-1", "label": "T3"},
         {"weekday": "Wed", "start": "09:00", "end": "09:50", "kind": "L", "room": "LT-1"}
       ],
-      "topics": ["Unit 1: Asymptotics", "Unit 1: Recurrences"]
+      "topics": ["Unit 1: Asymptotics", "Unit 1: Recurrences"],
+      "exams": [{"label": "Midsem", "date": "2054-10-07", "session": "FN"}]
     }
   ]
 }'></textarea>
-    <div class="row-form">
-      <label class="check"><input type="checkbox" name="replace" value="1">
-        Replace existing slots on matched courses</label>
-      <button class="btn">Import</button>
-    </div>
-  </form>
-  <p class="muted small">
-    Courses are matched by <code>code</code>, so re-importing a corrected timetable updates
-    in place. Marked classes and topic links are never destroyed — only unmarked future
-    ones are rebuilt.
-  </p>
+      <div class="row-form">
+        <label class="check"><input type="checkbox" name="replace" value="1">
+          Replace existing slots on matched courses</label>
+        <button class="btn">Import</button>
+      </div>
+    </form>
+    <p class="muted small">
+      Courses are matched by <code>code</code>, so re-importing a corrected timetable updates
+      in place. Marked classes, topic progress and one-off classes are never destroyed — only
+      unmarked future pattern classes are rebuilt.
+    </p>
+  </details>
 </section>
 {% endblock %}

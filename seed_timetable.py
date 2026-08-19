@@ -60,6 +60,7 @@ def main(argv: list[str]) -> int:
         print(f"slots added   : {counts['slots']}")
         print(f"holidays      : {counts['holidays']}")
         print(f"topics added  : {counts['topics']}")
+        print(f"exams         : {counts['exams']}")
         print(f"classes       : {before} -> {after}")
         if not (start and end):
             print("NOTE: no semester start/end set, so no classes were "

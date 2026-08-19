@@ -2,10 +2,10 @@
 {% block title %}Settings — acadtrack{% endblock %}
 
 {% block content %}
-<section class="hero"><div><h1>Settings</h1></div></section>
+<section class="hero"><div class="hero-head"><h1>Settings</h1></div></section>
 
 <section class="panel">
-  <h2>Semester</h2>
+  <div class="panel-head"><h2>Semester</h2></div>
   <p class="muted small">Classes are generated for every weekly slot between these two dates.
     Change them and the schedule rebuilds — anything already marked survives.</p>
   <form method="post" action="{{ url_for('settings_save') }}" class="row-form">
@@ -18,16 +18,17 @@
 </section>
 
 <section class="panel">
-  <h2>Holidays &amp; breaks</h2>
-  <p class="muted small">No classes are generated on these dates, and adding one clears the
-    unmarked classes already sitting on that day.</p>
+  <div class="panel-head"><h2>Holidays &amp; breaks</h2>
+    <span class="muted small">{{ holidays|length }} date{{ 's' if holidays|length != 1 }}</span></div>
+  <p class="muted small">No classes are generated on these dates, and adding one clears that
+    day's unmarked pattern classes. One-off classes you added by hand stay.</p>
   <div class="table-ish">
   {% for h in holidays %}
     <div class="slot-row">
-      <b>{{ h['date'] }}</b><span>{{ h['label'] }}</span>
+      <b class="slot-day wide">{{ h['date'] }}</b><span>{{ h['label'] }}</span>
       <form method="post" action="{{ url_for('holiday_delete', holiday_id=h['id']) }}">
         <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-        <button class="icon danger" title="Remove">×</button>
+        <button class="icon-btn danger" title="Remove" aria-label="Remove {{ h['date'] }}"><svg class="i"><use href="#i-trash"/></svg></button>
       </form>
     </div>
   {% else %}<p class="empty">None.</p>{% endfor %}
@@ -41,7 +42,7 @@
 </section>
 
 <section class="panel">
-  <h2>Schedule</h2>
+  <div class="panel-head"><h2>Schedule</h2></div>
   <form method="post" action="{{ url_for('schedule_regenerate') }}">
     <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
     <button class="btn ghost">Rebuild from timetable</button>
@@ -51,7 +52,7 @@
 </section>
 
 <section class="panel">
-  <h2>Access</h2>
+  <div class="panel-head"><h2>Access</h2></div>
   <p class="muted small">Sign-in is restricted to these addresses. Change them in
     <code>.env</code> (<code>ALLOWED_EMAILS</code>) and restart.</p>
   <div class="table-ish">

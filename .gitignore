@@ -13,3 +13,6 @@ venv/
 # Personal academic PDFs pulled from example-service
 handouts/
 *.png
+
+# OAuth console artifact; the app reads the id/secret from .env
+client_secret_*.json

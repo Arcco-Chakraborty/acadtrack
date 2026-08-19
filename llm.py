@@ -188,9 +188,9 @@ def estimate_lecture_ranges(code: str, title: str, planned: int,
             by_n[int(r["n"])] = (int(r["from"]), int(r["to"]))
         except (KeyError, TypeError, ValueError):
             continue
-    if len(by_n) != len(topics):
-        raise LLMError(f"model returned {len(by_n)} ranges for "
-                       f"{len(topics)} topics")
+    if set(by_n) != set(range(1, len(topics) + 1)):
+        raise LLMError(f"model returned ranges for topics {sorted(by_n)}, "
+                       f"not 1..{len(topics)}")
 
     ranges, prev_end = [], 0
     for i in range(1, len(topics) + 1):

@@ -322,3 +322,175 @@ def test_every_page_renders(client):
                 "/settings", "/healthz"]:
         r = client.get(url)
         assert r.status_code == 200, f"{url} returned {r.status_code}"
+
+
+
+# ---------------------------------------------------------- one-off classes --
+
+def test_one_off_class_survives_regenerate_and_holidays(client):
+    """A manually added class was never generated from the weekly pattern, so
+    no rebuild -- regenerate, new holiday, shortened semester -- may eat it."""
+    post(client, "/settings", semester_start="2054-08-03", semester_end="2054-08-31")
+    post(client, "/courses", code="DEMO 206")
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 206")["id"]
+
+    # A makeup class on a Saturday.
+    post(client, "/lecture/add", course_id=str(cid), date="2054-08-29",
+         start_time="10:00", end_time="11:00", kind="L")
+    assert any(l["date"] == "2054-08-29" for l in db.list_lectures(conn, cid))
+
+    post(client, "/schedule/regenerate")
+    assert any(l["date"] == "2054-08-29" for l in db.list_lectures(conn, cid))
+
+    post(client, "/holidays", date="2054-08-29", label="Makeup day")
+    assert any(l["date"] == "2054-08-29" for l in db.list_lectures(conn, cid))
+    conn.close()
+
+
+def test_deleting_a_slot_keeps_one_off_classes(client):
+    post(client, "/settings", semester_start="2054-08-03", semester_end="2054-08-31")
+    post(client, "/courses", code="DEMO 208")
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 208")["id"]
+    post(client, f"/course/{cid}/slots", weekday="0", start_time="12:00",
+         end_time="12:50")
+    post(client, "/lecture/add", course_id=str(cid), date="2054-08-30",
+         start_time="10:00", end_time="11:00", kind="T")
+
+    slot = db.list_slots(conn, cid)[0]
+    post(client, f"/slot/{slot['id']}/delete")
+
+    rows = [(l["date"], l["kind"]) for l in db.list_lectures(conn, cid)]
+    assert ("2054-08-30", "T") in rows             # the one-off stayed
+    # every future pattern class this slot generated is gone
+    from datetime import date as _date
+    today_s = _date.today().isoformat()
+    assert not any(k == "L" and d >= today_s for d, k in rows)
+    conn.close()
+
+
+def test_duplicate_one_off_is_reported_not_double_added(client):
+    post(client, "/settings", semester_start="2054-08-03", semester_end="2054-08-31")
+    post(client, "/courses", code="DEMO 212")
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 212")["id"]
+    post(client, "/lecture/add", course_id=str(cid), date="2054-08-29",
+         start_time="10:00", end_time="11:00", kind="L")
+    r = post(client, "/lecture/add", course_id=str(cid), date="2054-08-29",
+             start_time="10:00", end_time="11:00", kind="L")
+    assert b"already on the schedule" in r.data
+    assert len(db.list_lectures(conn, cid)) == 1
+    conn.close()
+
+
+# ---------------------------------------------------------------- importer --
+
+def test_import_replace_works_without_lectures_planned(client):
+    """--replace used to be nested under lectures_planned, so a payload
+    without that key silently kept the old slots."""
+    import json
+    first = {"courses": [{"code": "DEMO 209", "slots": [
+        {"weekday": "Mon", "start": "09:00", "end": "09:50", "kind": "L"}]}]}
+    second = {"courses": [{"code": "DEMO 209", "slots": [
+        {"weekday": "Tue", "start": "11:00", "end": "11:50", "kind": "L"}]}]}
+    post(client, "/timetable/import", payload=json.dumps(first))
+    post(client, "/timetable/import", payload=json.dumps(second), replace="1")
+
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 209")["id"]
+    slots = db.list_slots(conn, cid)
+    assert [(s["weekday"], s["start_time"]) for s in slots] == [(1, "11:00")]
+    conn.close()
+
+
+def test_import_with_duplicate_topic_titles_does_not_abort(client):
+    """Two units both naming a topic 'Introduction' used to crash the import
+    midway on a placeholder dict."""
+    import json
+    payload = {"courses": [{"code": "DEMO 207", "topics": [
+        "Introduction", {"title": "Introduction"}, "Natural deduction"]}]}
+    r = post(client, "/timetable/import", payload=json.dumps(payload))
+    assert b"Could not read" not in r.data
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 207")["id"]
+    assert len(db.list_topics(conn, cid)) == 2      # deduped, import completed
+    conn.close()
+
+
+def test_import_updates_course_colour_in_place(client):
+    import json
+    post(client, "/timetable/import", payload=json.dumps(
+        {"courses": [{"code": "DEMO 206", "color": "#111111"}]}))
+    post(client, "/timetable/import", payload=json.dumps(
+        {"courses": [{"code": "DEMO 206", "color": "#3987e5"}]}))
+    conn = conn_of(client)
+    assert db.get_course_by_code(conn, "DEMO 206")["color"] == "#3987e5"
+    conn.close()
+
+
+# ---------------------------------------------------------------- settings --
+
+def test_settings_rejects_a_semester_that_ends_before_it_starts(client):
+    post(client, "/settings", semester_start="2054-08-03", semester_end="2054-08-31")
+    r = post(client, "/settings", semester_start="2054-09-01",
+             semester_end="2054-08-01")
+    assert b"cannot end before" in r.data
+    conn = conn_of(client)
+    assert db.get_setting(conn, "semester_start") == "2054-08-03"
+    assert db.get_setting(conn, "semester_end") == "2054-08-31"
+    conn.close()
+
+
+def test_editing_a_course_with_a_blank_code_keeps_the_code(client):
+    post(client, "/courses", code="DEMO 213", title="Maths III")
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 213")["id"]
+    post(client, f"/course/{cid}/edit", code="", title="Example course subject 43")
+    course = db.get_course(conn, cid)
+    assert course["code"] == "DEMO 213"
+    assert course["title"] == "Example course subject 43"
+    conn.close()
+
+
+# ------------------------------------------------------------------- exams --
+
+def test_exams_import_is_idempotent_and_updates_in_place(client):
+    import json
+    payload = {"courses": [{"code": "DEMO 206", "exams": [
+        {"label": "Midsem", "date": "2054-10-10", "session": "AN1"},
+        {"label": "Compre", "date": "2054-12-16", "session": "FN"}]}]}
+    post(client, "/timetable/import", payload=json.dumps(payload))
+    post(client, "/timetable/import", payload=json.dumps(payload))
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 206")["id"]
+    assert len(db.list_exams(conn, cid)) == 2       # not 4
+
+    moved = {"courses": [{"code": "DEMO 206", "exams": [
+        {"label": "Midsem", "date": "2054-10-11", "session": "FN2"}]}]}
+    post(client, "/timetable/import", payload=json.dumps(moved))
+    exams = {e["label"]: (e["date"], e["session"])
+             for e in db.list_exams(conn, cid)}
+    assert exams["Midsem"] == ("2054-10-11", "FN2")
+    assert exams["Compre"] == ("2054-12-16", "FN")
+    conn.close()
+
+
+def test_exam_add_and_delete_roundtrip_and_render(client):
+    post(client, "/settings", semester_start="2054-08-03", semester_end="2054-11-27")
+    post(client, "/courses", code="DEMO 203", title="Intro to LLMs")
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 203")["id"]
+
+    post(client, f"/course/{cid}/exams", label="Midsem", date="2054-10-05",
+         session="FN1")
+    exams = db.list_exams(conn, cid)
+    assert [(e["label"], e["date"]) for e in exams] == [("Midsem", "2054-10-05")]
+
+    # It shows up on the dashboard and the course page.
+    assert b"Midsem" in client.get("/?today=2054-08-19").data
+    assert b"Midsem" in client.get(f"/course/{cid}").data
+
+    post(client, f"/exam/{exams[0]['id']}/delete")
+    assert db.list_exams(conn, cid) == []
+    conn.close()

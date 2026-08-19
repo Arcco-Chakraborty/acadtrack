@@ -51,6 +51,14 @@ def login_required(view):
     return wrapper
 
 
+def _safe_next(v: str | None) -> str | None:
+    """Only a same-site relative path may ride through the login flow --
+    anything else is an open-redirect vector."""
+    if v and v.startswith("/") and not v.startswith("//"):
+        return v
+    return None
+
+
 def allowed_emails() -> list[str]:
     raw = current_app.config.get("ALLOWED_EMAILS", "")
     return [e.strip().lower() for e in raw.split(",") if e.strip()]
@@ -78,6 +86,7 @@ def login():
     return render_template(
         "login.html",
         error=request.args.get("error"),
+        next=_safe_next(request.args.get("next")) or "",
         configured=bool(current_app.config.get("GOOGLE_CLIENT_ID")),
         local_login=_local_login_enabled())
 
@@ -87,6 +96,9 @@ def google_start():
     # `state` ties the callback to this browser session (blocks login CSRF).
     state = secrets.token_urlsafe(24)
     session["oauth_state"] = state
+    nxt = _safe_next(request.args.get("next"))
+    if nxt:
+        session["after_login"] = nxt
     params = {
         "client_id": current_app.config.get("GOOGLE_CLIENT_ID", ""),
         "redirect_uri": current_app.config.get("GOOGLE_REDIRECT_URI", ""),
@@ -107,10 +119,11 @@ def local_login():
     allow = allowed_emails()
     email = allow[0] if allow else "local@localhost"
     user = db.get_or_create_user(_conn(), email, "Local dev", "")
+    nxt = _safe_next(request.form.get("next"))
     session.clear()
     session["user_id"] = user["id"]
     session.permanent = True
-    return redirect(url_for("dashboard"))
+    return redirect(nxt or url_for("dashboard"))
 
 
 @auth_bp.route("/auth/callback")
@@ -145,10 +158,11 @@ def google_callback():
 
     user = db.get_or_create_user(_conn(), email, info.get("name", ""),
                                  info.get("picture", ""))
+    nxt = _safe_next(session.get("after_login"))
     session.clear()
     session["user_id"] = user["id"]
     session.permanent = True
-    return redirect(url_for("dashboard"))
+    return redirect(nxt or url_for("dashboard"))
 
 
 @auth_bp.route("/logout")

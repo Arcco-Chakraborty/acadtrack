@@ -1,7 +1,10 @@
 // Progressive enhancement only — every action works as a plain form POST
 // without this file.
 
-// Close any other open "Covered…" picker when one opens, so long lecture
+// Mark the document so CSS can reveal JS-only affordances (the stepper).
+document.documentElement.classList.add("js");
+
+// Close any other open "Covered" picker when one opens, so long lecture
 // lists do not turn into a wall of checkboxes.
 document.addEventListener("toggle", (e) => {
   const el = e.target;
@@ -48,6 +51,18 @@ if (watermark) {
     clearTimeout(timer);
     timer = setTimeout(apply, 250);
   });
+
+  // − / + step the watermark and repaint immediately.
+  document.querySelectorAll(".stepper .step").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const delta = parseInt(btn.dataset.step, 10) || 0;
+      const min = parseInt(watermark.min, 10) || 0;
+      const max = parseInt(watermark.max, 10) || 200;
+      const cur = parseInt(watermark.value, 10) || 0;
+      watermark.value = Math.min(max, Math.max(min, cur + delta));
+      watermark.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  });
 }
 
 // Keep a row's tint in step when a box is ticked by hand.
@@ -62,11 +77,12 @@ document.querySelectorAll("#topic-grid .tpick").forEach((label) => {
   });
 });
 
-// Auto-dismiss flashes; they are confirmations, not state.
+// Auto-dismiss toast flashes; they are confirmations, not state.
 setTimeout(() => {
-  document.querySelectorAll(".flash").forEach((f) => {
-    f.style.transition = "opacity .4s";
+  document.querySelectorAll(".flashes .flash:not(.static)").forEach((f) => {
+    f.style.transition = "opacity .4s, transform .4s";
     f.style.opacity = "0";
+    f.style.transform = "translateY(-4px)";
     setTimeout(() => f.remove(), 400);
   });
 }, 4000);

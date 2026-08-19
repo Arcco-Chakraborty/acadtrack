@@ -1,33 +1,42 @@
 {% extends "base.html" %}
-{% from "_macros.html" import bar %}
+{% from "_macros.html" import meter %}
 {% block title %}Courses — acadtrack{% endblock %}
 
 {% block content %}
 <section class="hero">
-  <div><h1>Courses</h1><p class="muted">{{ overview|length }} active</p></div>
+  <div class="hero-head"><h1>Courses</h1>
+    <p class="muted">{{ overview|length }} active
+      {%- set cr = overview | map(attribute='course') | map(attribute='credits') | select | sum %}
+      {%- if cr %} · {{ cr }} credits{% endif %}</p></div>
 </section>
 
 <section class="panel">
   <div class="table-ish">
   {% for o in overview %}
     {% set c = o.course %}{% set s = o.stats %}
-    <div class="course-row" style="--accent: {{ c['color'] or '#7aa2f7' }}">
+    <div class="course-row" style="--accent: {{ c['color'] or '#3987e5' }}">
       <div class="cr-main">
-        <a class="cr-code" href="{{ url_for('course_detail', course_id=c['id']) }}">{{ c['code'] }}</a>
-        <div class="cr-title">{{ c['title'] }}{% if c['instructor'] %} · <span class="muted">{{ c['instructor'] }}</span>{% endif %}</div>
+        <span class="cdot" aria-hidden="true"></span>
+        <div>
+          <a class="cr-code" href="{{ url_for('course_detail', course_id=c['id']) }}">{{ c['code'] }}</a>
+          <div class="cr-title">{{ c['title'] }}{% if c['instructor'] %} · <span class="muted">{{ c['instructor'] }}</span>{% endif %}</div>
+        </div>
       </div>
       <div class="cr-metric">
-        <span class="muted">syllabus</span>
+        <span>Syllabus</span>
         <b>{% if s.topics_total %}{{ s.topics_pct }}%{% else %}—{% endif %}</b>
-        {{ bar(s.topics_pct) }}
+        {% if s.topics_total %}{{ meter(s.topics_pct) }}{% endif %}
       </div>
       <div class="cr-metric">
-        <span class="muted">lectures</span>
+        <span>Lectures</span>
         <b>{{ s.held }} held · {{ s.remaining }} left</b>
-        <span class="submetrics"><span>✓ {{ s.attended }}</span><span class="{{ 'bad' if s.skipped }}">✗ {{ s.skipped }}</span></span>
+        <span class="submetrics">
+          <span class="good"><svg class="i"><use href="#i-check"/></svg>{{ s.attended }}</span>
+          <span class="{{ 'bad' if s.skipped }}"><svg class="i"><use href="#i-x"/></svg>{{ s.skipped }}</span>
+        </span>
       </div>
       <div class="cr-metric">
-        <span class="muted">this week</span>
+        <span>This week</span>
         <b>{{ o.week.left }} left</b>
         <span class="submetrics"><span>{{ o.week.done }}/{{ o.week.total }} done</span></span>
       </div>
@@ -43,14 +52,14 @@
 </section>
 
 <section class="panel">
-  <h2>Add a course</h2>
+  <div class="panel-head"><h2>Add a course</h2></div>
   <form method="post" action="{{ url_for('course_create') }}" class="row-form">
     <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-    <input name="code" placeholder="DEMO 204" required>
-    <input name="title" placeholder="Data Structures &amp; Algorithms">
-    <input name="instructor" placeholder="Instructor">
-    <input name="credits" type="number" min="0" max="10" placeholder="Cr" style="width:5rem">
-    <input name="color" type="color" value="#7aa2f7" title="Card colour">
+    <input name="code" placeholder="DEMO 204" required aria-label="Code">
+    <input name="title" placeholder="Data Structures &amp; Algorithms" aria-label="Title">
+    <input name="instructor" placeholder="Instructor" aria-label="Instructor">
+    <input name="credits" type="number" min="0" max="10" placeholder="Cr" class="w-cr" aria-label="Credits">
+    <input name="color" type="color" value="#3987e5" title="Course colour">
     <button class="btn">Add course</button>
   </form>
   <p class="muted small">Or paste your whole timetable at once in
@@ -59,12 +68,17 @@
 
 {% if archived %}
 <section class="panel">
-  <h2>Archived</h2>
+  <div class="panel-head"><h2>Archived</h2></div>
   <div class="table-ish">
   {% for c in archived %}
-    <div class="course-row muted">
-      <div class="cr-main"><a class="cr-code" href="{{ url_for('course_detail', course_id=c['id']) }}">{{ c['code'] }}</a>
-        <div class="cr-title">{{ c['title'] }}</div></div>
+    <div class="course-row is-archived" style="--accent: {{ c['color'] or '#3987e5' }}">
+      <div class="cr-main">
+        <span class="cdot" aria-hidden="true"></span>
+        <div>
+          <a class="cr-code" href="{{ url_for('course_detail', course_id=c['id']) }}">{{ c['code'] }}</a>
+          <div class="cr-title">{{ c['title'] }}</div>
+        </div>
+      </div>
       <form method="post" action="{{ url_for('course_archive', course_id=c['id']) }}">
         <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
         <button class="btn small ghost">Restore</button>
