@@ -103,9 +103,7 @@ def course_stats(lectures, topics, today: date) -> dict:
 
     held = attended + skipped
     marked = held  # unmarked past lectures are excluded from the percentage
-    t_total = len(topics)
-    t_done = sum(1 for t in topics if t["status"] == "done")
-    t_partial = sum(1 for t in topics if t["status"] == "partial")
+    cov = coverage(topics)
 
     return {
         "lectures_total": total,
@@ -116,13 +114,14 @@ def course_stats(lectures, topics, today: date) -> dict:
         "unmarked_past": past_scheduled,
         "remaining": remaining,
         "attendance_pct": round(100 * attended / marked) if marked else None,
-        "topics_total": t_total,
-        "topics_done": t_done,
-        "topics_partial": t_partial,
-        # Partial topics count half — a topic half-taught is not nothing, and
-        # showing it as zero makes a course mid-unit look stalled.
-        "topics_pct": round(100 * (t_done + 0.5 * t_partial) / t_total) if t_total else None,
-        "topics_left": t_total - t_done,
+        "topics_total": cov["topics_total"],
+        "topics_done": cov["topics_done"],
+        "topics_partial": cov["topics_partial"],
+        "topics_left": cov["topics_left"],
+        # Syllabus progress is weighted by the handout's hours per topic, not
+        # by topic count — see coverage().
+        "topics_pct": cov["pct_done"],
+        "covered_frac": cov["covered_frac"],
     }
 
 
@@ -163,95 +162,125 @@ def group_by_day(lectures, week_start: date) -> list[dict]:
     return days
 
 
-def suggest_topics(topics, lectures_done: int) -> dict:
-    """Which topics a 'done till lecture N' watermark implies.
+def split_hours(ranges) -> list[int]:
+    """Turn each topic's handout lecture range into a weight in hours.
 
-    A topic whose lecture range ends at or before N is done; one that straddles
-    N is partial. Topics with no lecture numbers (a handout that gave modules
-    but no numbering) are left out of the suggestion entirely — guessing at
-    them would silently mark work as covered that may not be.
+    Handouts routinely quote one range across several topics of a module --
+    DEMO 209 gives "L8-18" to three separate lines -- so a range is shared out
+    between the topics that quote it, not handed to each of them. Without that
+    the course adds up to 114 hours instead of its actual 42.
 
-    Returns {"done": {ids}, "partial": {ids}, "unnumbered": [rows]}.
+    `ranges` is one (from, to) or None per topic, in handout order. Consecutive
+    topics quoting the same range form a group; its span is split as evenly as
+    whole hours allow, earlier topics taking the remainder. Every topic is
+    worth at least 1, so a group with more topics than hours still counts them
+    all.
     """
-    done, partial, unnumbered = set(), set(), []
-    for t in topics:
-        lo, hi = t["lec_from"], t["lec_to"]
-        if lo is None and hi is None:
-            unnumbered.append(t)
-            continue
-        lo = lo if lo is not None else hi
-        hi = hi if hi is not None else lo
-        if lectures_done >= hi:
-            done.add(t["id"])
-        elif lectures_done >= lo:
-            partial.add(t["id"])
-    return {"done": done, "partial": partial, "unnumbered": unnumbered}
+    out = []
+    i = 0
+    ranges = list(ranges)
+    while i < len(ranges):
+        r = ranges[i]
+        j = i + 1
+        while j < len(ranges) and ranges[j] == r and r is not None:
+            j += 1
+        n = j - i
+        if r is None:
+            out.extend([1] * n)
+        else:
+            lo, hi = r
+            span = max(1, hi - lo + 1)
+            base, rem = divmod(span, n)
+            out.extend([max(1, base + (1 if k < rem else 0)) for k in range(n)])
+        i = j
+    return out
 
 
-def syllabus_position(course, topics, lectures_left_calendar: int) -> dict:
-    """The headline numbers: where the course is, and what is left.
+def topic_hours(t) -> float:
+    """How much of the syllabus one topic is worth.
 
-    `lectures_planned` comes from the handout's course plan. `remaining_plan`
-    is how many of those are still to be delivered; `lectures_left_calendar`
-    is how many classes the timetable still has. They answer different
-    questions and can disagree — a course running behind has more calendar
-    slots left than plan lectures.
+    The handout's own hours-per-topic, when it gave any; 1 otherwise, which
+    makes the percentage a plain topic count for a handout that listed modules
+    without hours. This is a measure of how much *material* a topic holds — it
+    says nothing about when it is taught, which is why it survives instructors
+    running late or teaching the syllabus out of order.
     """
-    done_n = course["lectures_done"] or 0
-    planned = course["lectures_planned"]
-    numbered = [t for t in topics if t["lec_from"] or t["lec_to"]]
+    try:
+        h = float(t["hours"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return 1.0
+    return h if h > 0 else 1.0
 
-    # Fall back to the last lecture any topic mentions, so a course whose
-    # planned count was never set still reports something meaningful.
-    if not planned and numbered:
-        planned = max((t["lec_to"] or t["lec_from"]) for t in numbered)
 
-    t_total = len(topics)
-    t_done = sum(1 for t in topics if t["status"] == "done")
-    t_partial = sum(1 for t in topics if t["status"] == "partial")
-    t_left = t_total - t_done
+def _tidy(x: float):
+    """Whole hours print as whole numbers -- "42", not "42.0". Half an hour
+    comes from a partial topic and is worth showing."""
+    x = round(x, 1)
+    return int(x) if x == int(x) else x
 
-    remaining_plan = max(0, planned - done_n) if planned else None
-    # Topics per lecture, measured on what has actually been covered — a more
-    # honest rate than dividing the syllabus by the lecture count, because the
-    # early lectures of most courses move slower than the plan implies.
-    rate = (t_done + 0.5 * t_partial) / done_n if done_n else None
-    # The estimate depends only on the observed rate. Gating it on lectures
-    # remaining used to hide the shortfall exactly when the plan had run out,
-    # which is when the warning matters most.
-    est_lectures_for_rest = round(t_left / rate) if rate else None
 
+def coverage(topics) -> dict:
+    """How much of the syllabus is covered, weighted by handout hours.
+
+    A `partial` topic counts half: half-taught is not nothing, and scoring it
+    zero makes a course sitting mid-unit look stalled.
+
+    Coverage is per topic and carries no assumption that the syllabus is taught
+    in order — instructors reorder, and a topic later in the handout can be
+    done while an earlier one is not. `behind` counts exactly those: topics
+    still pending that sit before the furthest one already covered.
+    """
+    total = done_h = part_h = 0.0
+    t_done = t_partial = 0
+    weighted = False
+    frontier = -1
+    for i, t in enumerate(topics):
+        h = topic_hours(t)
+        total += h
+        if h != 1.0:
+            weighted = True
+        if t["status"] == "done":
+            done_h += h
+            t_done += 1
+            frontier = i
+        elif t["status"] == "partial":
+            part_h += h
+            t_partial += 1
+            frontier = i
+    behind = sum(1 for t in list(topics)[:frontier + 1]
+                 if t["status"] == "pending")
+
+    covered = done_h + 0.5 * part_h
+    frac = covered / total if total else None
     return {
-        "lectures_done": done_n,
-        "lectures_planned": planned,
-        "remaining_plan": remaining_plan,
-        "lectures_left_calendar": lectures_left_calendar,
-        "topics_total": t_total,
+        "hours_total": _tidy(total),
+        "hours_covered": _tidy(covered),
+        "hours_left": _tidy(total - covered),
+        "covered_frac": frac,
+        "pct_done": round(100 * frac) if frac is not None else None,
+        "pct_left": round(100 * (1 - frac)) if frac is not None else None,
+        "topics_total": len(topics),
         "topics_done": t_done,
         "topics_partial": t_partial,
-        "topics_left": t_left,
-        "pct": round(100 * (t_done + 0.5 * t_partial) / t_total) if t_total else None,
-        "rate": round(rate, 2) if rate else None,
-        "est_lectures_for_rest": est_lectures_for_rest,
-        # Will the remaining plan lectures cover the remaining topics at the
-        # rate seen so far? Negative means the course has to speed up.
-        "slack": (remaining_plan - est_lectures_for_rest)
-                 if (remaining_plan is not None
-                     and est_lectures_for_rest is not None) else None,
-        "unnumbered": sum(1 for t in topics
-                          if t["lec_from"] is None and t["lec_to"] is None),
+        "topics_left": len(topics) - t_done,
+        # True when the handout gave real hours, so the UI can say whether the
+        # percentage is hours-weighted or just a topic count.
+        "weighted": weighted,
+        "behind": behind,
+        "frontier": topics[frontier] if frontier >= 0 else None,
     }
 
 
 def pace(stats: dict) -> dict | None:
-    """Is the syllabus keeping up with the calendar? Compares fraction of
-    topics done against fraction of lectures held. Returns None when either
-    side has no data to compare."""
+    """Is the syllabus keeping up with the calendar? Compares the fraction of
+    the syllabus covered against the fraction of classes already held. Returns
+    None when either side has no data to compare."""
     if not stats["topics_total"] or not stats["lectures_total"]:
         return None
-    topic_frac = (stats["topics_done"] + 0.5 * stats["topics_partial"]) / stats["topics_total"]
+    if stats["covered_frac"] is None:
+        return None
     lec_frac = stats["held"] / stats["lectures_total"]
-    delta = round((topic_frac - lec_frac) * 100)
+    delta = round((stats["covered_frac"] - lec_frac) * 100)
     if abs(delta) < 8:
         label, tone = "on track", "ok"
     elif delta > 0:

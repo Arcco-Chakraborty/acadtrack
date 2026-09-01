@@ -1,82 +1,131 @@
-{# The primary way progress is recorded. Set the lecture watermark, and the
-   checkboxes it implies come pre-ticked from the handout's own lecture
-   numbering — correct any that are wrong, then save once. #}
-{% macro progress_panel(course, topics, pos, suggest, next_url,
-                        llm_ready=False, estimated=False) %}
+{# The only place progress is recorded.
+
+   Write what was actually covered, in your own words, as a dated log entry.
+   "Work it out" reads that log against the handout and proposes a state for
+   every topic; you correct it and save. Nothing the AI proposes is stored
+   until Save — and no lecture number is involved anywhere, because classes
+   run late and instructors reorder. #}
+{% macro progress_panel(course, topics, cov, notes, proposal, next_url,
+                        today=None, llm_ready=False, weighted_by_ai=False) %}
 <section class="panel progress-panel" style="--accent: {{ course['color'] or '#3987e5' }}">
   <div class="panel-head">
     <h2>Where I've got to</h2>
-    {% if pos.pct is not none %}<span class="muted small">{{ pos.pct }}% of the syllabus</span>{% endif %}
+    {% if cov.pct_left is not none %}
+      <span class="muted small">{{ cov.hours_covered }} of {{ cov.hours_total }}
+        {{ 'lecture-hours' if cov.weighted else 'topics' }} covered</span>
+    {% endif %}
   </div>
 
+  {% if cov.pct_left is not none %}
+  <div class="headline">
+    <b class="big-pct">{{ cov.pct_left }}<i>%</i></b>
+    <span>of the syllabus left</span>
+  </div>
+  {% endif %}
+
+  {# ---------------------------------------------------------------- log -- #}
+  <div class="log">
+    <h3 class="log-head">What's been covered</h3>
+    {% if notes %}
+    <ul class="log-list">
+      {% for n in notes|reverse %}
+      <li>
+        <b class="log-date">{{ n['date'] }}</b>
+        <span class="log-text">{{ n['text'] }}</span>
+        <form method="post" action="{{ url_for('note_delete', note_id=n['id']) }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="next" value="{{ next_url }}">
+          <button class="icon-btn danger" title="Remove entry" aria-label="Remove log entry"><svg class="i"><use href="#i-trash"/></svg></button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+      <p class="empty">Nothing logged yet. Write what the last class actually
+        got through — the lecturer's words are fine.</p>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('note_add', course_id=course['id']) }}" class="log-add">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <input type="date" name="date" value="{{ today or '' }}" aria-label="Date">
+      <input name="text" required autocomplete="off" class="log-input"
+             placeholder="finished K-maps, started sequential circuits"
+             aria-label="What was covered">
+      <button class="btn">Log it</button>
+    </form>
+  </div>
+
+  {# ------------------------------------------------------------- the AI -- #}
+  {% if topics %}
+    {% if llm_ready %}
+    <form method="post" action="{{ url_for('course_resolve', course_id=course['id']) }}" class="resolve">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <button class="btn primary" {{ 'disabled' if not notes }}>
+        <svg class="i"><use href="#i-spark"/></svg> Work out what's left</button>
+      <span class="muted small">Reads the log above against the {{ topics|length }}
+        topics in the handout.</span>
+    </form>
+    {% else %}
+    <p class="muted small">No Gemini keys configured (GEMINI_API_KEYS), so the
+      log can't be read automatically — tick the topics by hand.</p>
+    {% endif %}
+  {% endif %}
+
+  {% if proposal %}
+  <div class="proposal">
+    <p><svg class="i"><use href="#i-spark"/></svg>
+      <b>{{ proposal.summary or 'Read the log against the handout.' }}</b></p>
+    <p class="muted small">
+      {{ proposal.changed }} topic{{ 's' if proposal.changed != 1 }} would change.
+      This is a reading of your log, not a fact — correct anything wrong below,
+      then <b>Save</b>. Nothing is stored until you do.
+      {% if proposal.unmatched %}
+        <br>Couldn't place in the handout: {{ proposal.unmatched|join('; ') }}.
+      {% endif %}
+    </p>
+    <form method="post" action="{{ url_for('proposal_discard', course_id=course['id']) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <button class="btn small ghost">Discard</button>
+    </form>
+  </div>
+  {% endif %}
+
+  {# ------------------------------------------------------------- topics -- #}
   <form method="post" action="{{ url_for('course_progress', course_id=course['id']) }}">
     <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
     <input type="hidden" name="next" value="{{ next_url }}">
-    <input type="hidden" name="topics_submitted" value="1">
 
-    <div class="watermark">
-      <label class="wm-field">Done till lecture
-        <span class="stepper">
-          <button type="button" class="step js-only" data-step="-1" aria-label="One lecture back"><svg class="i"><use href="#i-chev-l"/></svg></button>
-          <input type="number" name="lectures_done" min="0" max="200" inputmode="numeric"
-                 value="{{ course['lectures_done'] or 0 }}"
-                 data-suggest-url="{{ url_for('course_suggest', course_id=course['id']) }}">
-          <button type="button" class="step js-only" data-step="1" aria-label="One lecture on"><svg class="i"><use href="#i-chev-r"/></svg></button>
-        </span>
-      </label>
-      <label class="wm-field muted">of
-        <input type="number" name="lectures_planned" min="0" max="200" class="wm-planned"
-               value="{{ course['lectures_planned'] or pos.lectures_planned or '' }}"
-               placeholder="?">
-        planned</label>
-      <button class="btn">Save</button>
-    </div>
-
-    <div class="derived">
-      <div class="tile"><b>{{ pos.remaining_plan if pos.remaining_plan is not none else '—' }}</b><span>lectures left in the plan</span></div>
-      <div class="tile"><b>{{ pos.lectures_left_calendar }}</b><span>classes left on the timetable</span></div>
-      <div class="tile"><b>{{ pos.topics_left }}</b><span>topics left</span></div>
-      {% if pos.est_lectures_for_rest is not none %}
-      <div class="tile"><b>~{{ pos.est_lectures_for_rest }}</b><span>lectures needed for them</span></div>
-      {% endif %}
-    </div>
-
-    {% if pos.slack is not none %}
-      {% if pos.slack < 0 %}
-        <p class="verdict warn"><svg class="i"><use href="#i-spark"/></svg><span>At {{ pos.rate }} topics per lecture, the
-          remaining {{ pos.topics_left }} topics need about
-          {{ pos.est_lectures_for_rest }} lectures but only
-          {{ pos.remaining_plan }} are left — <b>about {{ -pos.slack }} short</b>.</span></p>
-      {% else %}
-        <p class="verdict ok"><svg class="i"><use href="#i-check"/></svg><span>At {{ pos.rate }} topics per lecture the remaining
-          {{ pos.topics_left }} topics fit in about {{ pos.est_lectures_for_rest }}
-          lectures, with {{ pos.remaining_plan }} left — <b>{{ pos.slack }} spare</b>.</span></p>
-      {% endif %}
-    {% elif not pos.topics_total %}
-      <p class="empty">No syllabus loaded for this course, so only lecture counts are tracked.</p>
-    {% elif not course['lectures_done'] %}
-      <p class="empty">Set the lecture you've reached and the topics below tick themselves.</p>
+    {# No tiles here: the hero above already carries hours left and topics
+       left, and printing them twice reads as two different measurements. #}
+    {% if cov.behind %}
+      <p class="verdict warn"><svg class="i"><use href="#i-spark"/></svg><span>{{ cov.behind }}
+        topic{{ 's' if cov.behind != 1 }} earlier in the handout
+        {{ 'are' if cov.behind != 1 else 'is' }} still untouched, so the course
+        has been taught out of order — they are counted as left.</span></p>
     {% endif %}
 
     {% if topics %}
     <div class="topic-grid" id="topic-grid">
       {% set ns = namespace(unit=none) %}
       {% for t in topics %}
+      {% set state = proposal.by_id[t['id']] if proposal else t['status'] %}
       {% if t['unit'] and t['unit'] != ns.unit %}
         {% set ns.unit = t['unit'] %}
         <div class="unit-head">{{ ns.unit }}</div>
       {% endif %}
-      <label class="tpick {{ t['status'] }}">
+      <label class="tpick {{ state }} {{ 'diff' if proposal and state != t['status'] }}">
         <span class="picks">
           <input type="checkbox" name="done" value="{{ t['id'] }}"
-                 {{ 'checked' if t['status'] == 'done' }} title="Done" aria-label="Done">
+                 {{ 'checked' if state == 'done' }} title="Done" aria-label="Done">
           <input type="checkbox" name="partial" value="{{ t['id'] }}"
-                 {{ 'checked' if t['status'] == 'partial' }} title="Partly done" aria-label="Partly done"
+                 {{ 'checked' if state == 'partial' }} title="Partly done" aria-label="Partly done"
                  class="half">
         </span>
         <span class="tlabel">
-          {% if t['lec_from'] %}<b class="lecno">L{{ t['lec_from'] }}{% if t['lec_to'] and t['lec_to'] != t['lec_from'] %}–{{ t['lec_to'] }}{% endif %}</b>
-          {% else %}<b class="lecno none" title="No lecture number in the handout">—</b>{% endif %}
+          {% if cov.weighted %}<b class="wgt" title="{{ t['hours'] }} lecture-hours in the handout">{{ t['hours'] }}h</b>{% endif %}
           <span class="ttext">{{ t['title'] | strip_lec }}</span>
         </span>
       </label>
@@ -84,33 +133,27 @@
     </div>
     <p class="muted small hint">
       Left box = done, right = partly done.
-      {% if estimated %}Lecture ranges here are an <b>AI estimate</b>, not the
-      handout — correct any that look wrong.{% endif %}
-      {% if pos.unnumbered %}{{ pos.unnumbered }} topic{{ 's' if pos.unnumbered != 1 }}
-      have no lecture number in the handout, so the watermark never ticks
-      {{ 'them' if pos.unnumbered != 1 else 'it' }} — tick by hand.{% endif %}
+      {% if weighted_by_ai %}The hours here are an <b>AI guess</b> at how big
+      each topic is, not the handout's.{% endif %}
     </p>
+    <button class="btn">Save</button>
     {% endif %}
   </form>
 
-  {# Offered only when the handout genuinely gave nothing to work with. A
-     handout's own numbering is fact and is never overwritten. #}
-  {% if topics and pos.unnumbered == topics|length %}
+  {# Offered only when the handout gave no hours at all, so every topic would
+     otherwise count the same. A handout's own hours are fact and are never
+     overwritten. #}
+  {% if topics and not cov.weighted and llm_ready %}
   <div class="estimate">
-    {% if llm_ready %}
-      <form method="post" action="{{ url_for('course_estimate', course_id=course['id']) }}">
-        <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-        <input type="hidden" name="next" value="{{ next_url }}">
-        <label class="muted small">This handout gives no lecture numbers. Spread
-          <input type="number" name="lectures_planned" min="1" max="200" class="wm-planned"
-                 value="{{ course['lectures_planned'] or 42 }}">
-          lectures across its {{ topics|length }} topics?</label>
-        <button class="btn small ghost">Estimate with AI</button>
-      </form>
-    {% else %}
-      <p class="muted small">This handout gives no lecture numbers, and no Gemini
-        keys are configured, so the watermark can't tick these automatically.</p>
-    {% endif %}
+    <form method="post" action="{{ url_for('course_weigh', course_id=course['id']) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <label class="muted small">This handout gives no hours, so all
+        {{ topics|length }} topics currently count the same. Spread
+        <input type="number" name="total_hours" min="{{ topics|length }}" max="200"
+               class="wm-planned" value="42"> lecture-hours across them?</label>
+      <button class="btn small ghost">Weigh with AI</button>
+    </form>
   </div>
   {% endif %}
 </section>

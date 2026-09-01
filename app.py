@@ -146,9 +146,30 @@ def _semester(conn) -> tuple[date | None, date | None]:
             sch.parse_date(db.get_setting(conn, "semester_end")))
 
 
-def _back(default: str = "dashboard"):
+def _get_proposal(course_id: int, topics) -> dict | None:
+    """The AI's pending reading of the log, if there is one.
+
+    It lives in the session rather than the database: it is a proposal about
+    what was covered, and only the owner's save makes it a fact. A proposal
+    made before the topic list changed is dropped rather than half-applied.
+    """
+    p = session.get(f"proposal_{course_id}")
+    if not p:
+        return None
+    states = p.get("states") or {}
+    if {str(t["id"]) for t in topics} != set(states):
+        session.pop(f"proposal_{course_id}", None)
+        return None
+    return dict(p, by_id={int(k): v for k, v in states.items()})
+
+
+def _clear_proposal(course_id: int) -> None:
+    session.pop(f"proposal_{course_id}", None)
+
+
+def _back(default: str = "dashboard", **kw):
     return redirect(request.form.get("next") or request.referrer
-                    or url_for(default))
+                    or url_for(default, **kw))
 
 
 def regenerate(conn, course_id: int | None = None, from_date: date | None = None) -> int:
@@ -236,10 +257,10 @@ def _course_overview(conn, today: date) -> list[dict]:
         out.append({
             "course": course,
             "stats": stats,
-            "pos": sch.syllabus_position(course, topics, stats["remaining"]),
+            "cov": sch.coverage(topics),
             "week": sch.week_summary(lectures, week_start, today),
             "pace": sch.pace(stats),
-            "last": db.last_covered(conn, course["id"]),
+            "note": db.latest_note(conn, course["id"]),
             "next": nxt,
             "exam": next_exam.get(course["id"]),
         })
@@ -360,18 +381,18 @@ def register_routes(app: Flask) -> None:
         topics = db.list_topics(conn, course_id)
         stats = sch.course_stats(lectures, topics, today)
         week_start, _ = sch.week_bounds(today)
-        pos = sch.syllabus_position(course, topics, stats["remaining"])
+        cov = sch.coverage(topics)
         exams = [dict(e, days=(sch.parse_date(e["date"]) - today).days)
                  for e in db.list_exams(conn, course_id)]
         return render_template(
             "course.html", course=course, topics=topics, lectures=lectures,
             exams=exams,
-            stats=stats, pace=sch.pace(stats), today=today, pos=pos,
-            suggest=sch.suggest_topics(topics, course["lectures_done"] or 0),
+            stats=stats, pace=sch.pace(stats), today=today, cov=cov,
             llm_ready=llm.configured(),
-            estimated=db.get_setting(conn, f"estimated_lectures_{course_id}") == "1",
+            notes=db.list_notes(conn, course_id),
+            proposal=_get_proposal(course_id, topics),
+            weighted_by_ai=db.get_setting(conn, f"ai_hours_{course_id}") == "1",
             slots=db.list_slots(conn, course_id),
-            last=db.last_covered(conn, course_id),
             week=sch.week_summary(lectures, week_start, today),
             topics_by_lecture=db.topics_for_lectures(
                 conn, [l["id"] for l in lectures]),
@@ -466,56 +487,57 @@ def register_routes(app: Flask) -> None:
     @app.route("/course/<int:course_id>/progress", methods=["POST"])
     @login_required
     def course_progress(course_id: int):
-        """The main way progress is recorded: 'done till lecture N', plus the
-        topic checkboxes that N suggested (and the owner corrected)."""
+        """Save the topic states — either the AI's proposal as-corrected, or a
+        hand edit. Saving is always explicit: nothing the AI proposes touches
+        the database until this runs."""
         conn = app.config["GET_CONN"]()
         if db.get_course(conn, course_id) is None:
             abort(404)
-        fields = {}
-        n = _int(request.form.get("lectures_done"))
-        if n is not None:
-            fields["lectures_done"] = max(0, n)
-        planned = _int(request.form.get("lectures_planned"))
-        if planned is not None:
-            fields["lectures_planned"] = max(0, planned) or None
-        if fields:
-            db.update_course(conn, course_id, **fields)
-
-        # Absent `topics_submitted` the form only moved the watermark, so the
-        # existing topic states must be left alone rather than all cleared.
-        if request.form.get("topics_submitted"):
-            done = {_int(t) for t in request.form.getlist("done")}
-            partial = {_int(t) for t in request.form.getlist("partial")}
-            db.set_topic_statuses(conn, course_id,
-                                  {d for d in done if d},
-                                  {p for p in partial if p} - done)
+        done = {t for t in (_int(x) for x in request.form.getlist("done")) if t}
+        partial = {t for t in (_int(x) for x in request.form.getlist("partial"))
+                   if t} - done
+        db.set_topic_statuses(conn, course_id, done, partial)
+        _clear_proposal(course_id)
         flash("Progress saved.", "ok")
-        return _back("courses")
+        return _back("course_detail", course_id=course_id)
 
-    @app.route("/course/<int:course_id>/suggest")
+    # -- the log: what was actually covered, in his own words ---------------
+
+    @app.route("/course/<int:course_id>/note", methods=["POST"])
     @login_required
-    def course_suggest(course_id: int):
-        """Preview what a watermark would tick, without committing it."""
+    def note_add(course_id: int):
         conn = app.config["GET_CONN"]()
-        course = db.get_course(conn, course_id)
-        if course is None:
+        if db.get_course(conn, course_id) is None:
             abort(404)
-        topics = db.list_topics(conn, course_id)
-        n = _int(request.args.get("n"))
-        if n is None:
-            n = course["lectures_done"] or 0
-        s = sch.suggest_topics(topics, n)
-        return {"n": n, "done": sorted(s["done"]),
-                "partial": sorted(s["partial"]),
-                "unnumbered": [t["id"] for t in s["unnumbered"]]}
+        text = request.form.get("text", "").strip()
+        if not text:
+            flash("Write what was covered.", "error")
+            return _back("course_detail", course_id=course_id)
+        d = sch.parse_date(request.form.get("date", "")) or _today()
+        db.create_note(conn, course_id, sch.fmt(d), text)
+        flash("Logged.", "ok")
+        return _back("course_detail", course_id=course_id)
 
-    @app.route("/course/<int:course_id>/estimate", methods=["POST"])
+    @app.route("/note/<int:note_id>/delete", methods=["POST"])
     @login_required
-    def course_estimate(course_id: int):
-        """Fill in lecture ranges for a course whose handout gave none.
+    def note_delete(note_id: int):
+        conn = app.config["GET_CONN"]()
+        row = conn.execute("SELECT course_id FROM progress_note WHERE id = ?",
+                           (note_id,)).fetchone()
+        db.delete_note(conn, note_id)
+        if row is None:
+            return _back("courses")
+        # The proposal was worked out from a log that no longer says this.
+        _clear_proposal(row["course_id"])
+        return _back("course_detail", course_id=row["course_id"])
 
-        Only ever touches topics that have no numbers already — a handout's own
-        numbering is fact and must never be overwritten by an estimate.
+    @app.route("/course/<int:course_id>/resolve", methods=["POST"])
+    @login_required
+    def course_resolve(course_id: int):
+        """Read the log against the handout and propose a state per topic.
+
+        The answer is held in the session, not written: it is a reading of a
+        log, and the owner corrects it before it counts.
         """
         conn = app.config["GET_CONN"]()
         course = db.get_course(conn, course_id)
@@ -523,34 +545,74 @@ def register_routes(app: Flask) -> None:
             abort(404)
         if not llm.configured():
             flash("No Gemini keys configured (GEMINI_API_KEYS).", "error")
-            return _back("courses")
+            return _back("course_detail", course_id=course_id)
 
         topics = db.list_topics(conn, course_id)
-        if any(t["lec_from"] for t in topics):
-            flash("This course already has lecture numbers from its handout — "
+        notes = db.list_notes(conn, course_id)
+        try:
+            out = llm.resolve_coverage(course["code"], course["title"],
+                                       topics, notes)
+        except llm.LLMError as e:
+            flash(f"Could not work it out: {e}", "error")
+            return _back("course_detail", course_id=course_id)
+
+        states = dict(zip((t["id"] for t in topics), out["states"]))
+        changed = sum(1 for t in topics if states[t["id"]] != t["status"])
+        session[f"proposal_{course_id}"] = {
+            "states": {str(k): v for k, v in states.items()},
+            "summary": out["summary"],
+            "unmatched": out["unmatched"],
+            "changed": changed,
+        }
+        flash("Read the log against the handout — check it, then save.", "ok")
+        return _back("course_detail", course_id=course_id)
+
+    @app.route("/course/<int:course_id>/discard", methods=["POST"])
+    @login_required
+    def proposal_discard(course_id: int):
+        _clear_proposal(course_id)
+        flash("Proposal discarded.", "ok")
+        return _back("course_detail", course_id=course_id)
+
+    @app.route("/course/<int:course_id>/weigh", methods=["POST"])
+    @login_required
+    def course_weigh(course_id: int):
+        """Weight the topics of a handout that gave no hours.
+
+        Only ever runs on a course whose topics are all still at the default
+        weight of 1 — a handout's own hours are fact and are never overwritten.
+        """
+        conn = app.config["GET_CONN"]()
+        course = db.get_course(conn, course_id)
+        if course is None:
+            abort(404)
+        if not llm.configured():
+            flash("No Gemini keys configured (GEMINI_API_KEYS).", "error")
+            return _back("course_detail", course_id=course_id)
+        topics = db.list_topics(conn, course_id)
+        if any((t["hours"] or 1) != 1 for t in topics):
+            flash("This course already has hours from its handout — "
                   "not overwriting them.", "error")
-            return _back("courses")
-        planned = (_int(request.form.get("lectures_planned"))
-                   or course["lectures_planned"])
-        if not planned:
-            flash("Set how many lectures the course plan has first.", "error")
-            return _back("courses")
+            return _back("course_detail", course_id=course_id)
+        total = _int(request.form.get("total_hours"))
+        if not total:
+            flash("Say how many lecture-hours the course has first.", "error")
+            return _back("course_detail", course_id=course_id)
 
         try:
-            ranges = llm.estimate_lecture_ranges(
-                course["code"], course["title"], planned,
-                [t["title"] for t in topics])
+            hours = llm.estimate_hours(course["code"], course["title"],
+                                       [t["title"] for t in topics], total)
         except llm.LLMError as e:
-            flash(f"Could not estimate: {e}", "error")
-            return _back("courses")
+            flash(f"Could not weigh the topics: {e}", "error")
+            return _back("course_detail", course_id=course_id)
 
-        for t, (lo, hi) in zip(topics, ranges):
-            db.update_topic(conn, t["id"], lec_from=lo, lec_to=hi)
-        db.update_course(conn, course_id, lectures_planned=planned)
-        db.set_setting(conn, f"estimated_lectures_{course_id}", "1")
-        flash(f"Estimated lecture ranges for {len(ranges)} topics. "
-              f"These are a guess, not the handout — check them.", "ok")
-        return _back("courses")
+        for t, h in zip(topics, hours):
+            db.update_topic(conn, t["id"], hours=h)
+        db.set_setting(conn, f"ai_hours_{course_id}", "1")
+        flash(f"Weighted {len(hours)} topics across {total} hours. "
+              f"That is a guess at how big each topic is, not the handout.",
+              "ok")
+        return _back("course_detail", course_id=course_id)
 
     @app.route("/topic/<int:topic_id>", methods=["POST"])
     @login_required
@@ -560,6 +622,9 @@ def register_routes(app: Flask) -> None:
         for key in ("title", "unit", "status", "note"):
             if key in request.form:
                 fields[key] = request.form[key].strip()
+        hours = _int(request.form.get("hours"))
+        if hours is not None:
+            fields["hours"] = max(1, hours)
         if fields:
             db.update_topic(conn, topic_id, **fields)
         return _back("courses")
@@ -863,9 +928,6 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
                                             or course["instructor"]),
                              credits=_int(entry.get("credits")) or course["credits"],
                              color=str(entry.get("color") or course["color"]))
-        if entry.get("lectures_planned"):
-            db.update_course(conn, cid,
-                             lectures_planned=_int(entry["lectures_planned"]))
         if replace:
             # The old pattern is void, so its future unmarked classes go too.
             for s in db.list_slots(conn, cid):
@@ -893,35 +955,26 @@ def import_timetable(conn, payload: dict, replace: bool = False) -> dict:
         # append a second copy of every topic.
         have_topics = {t["title"].strip().lower(): t
                        for t in db.list_topics(conn, cid)}
-        for t in entry.get("topics", []):
+        payload_topics = entry.get("topics", [])
+        weights = topic_weights(payload_topics)
+        for t, hours in zip(payload_topics, weights):
             title = t if isinstance(t, str) else str(t.get("title", ""))
             unit = "" if isinstance(t, str) else str(t.get("unit", ""))
-            lo = hi = None
-            if isinstance(t, dict):
-                lo, hi = parse_lec_range(t.get("lec", ""))
-                lo = _int(t.get("lec_from")) if t.get("lec_from") else lo
-                hi = _int(t.get("lec_to")) if t.get("lec_to") else hi
-            if lo is None and hi is None:      # else infer from "L9-14 ..."
-                lo, hi = parse_lec_range(title)
-                if lo is None:
-                    lo, hi = parse_lec_range(unit)
             key = title.strip().lower()
             if not key:
                 continue
             existing = have_topics.get(key)
             if existing is None:
-                tid = db.create_topic(conn, cid, title, unit,
-                                      lec_from=lo, lec_to=hi)
+                tid = db.create_topic(conn, cid, title, unit, hours=hours)
                 counts["topics"] += 1
                 # A same-title line later in this payload must see the row
                 # that now exists, not a placeholder it cannot update.
-                have_topics[key] = {"id": tid, "lec_from": lo, "lec_to": hi}
-            elif (lo, hi) != (existing["lec_from"], existing["lec_to"]):
-                # Correcting the numbering must not require deleting topics,
+                have_topics[key] = {"id": tid, "hours": hours}
+            elif hours != existing["hours"]:
+                # Correcting the weights must not require deleting topics,
                 # which would take their done/partial state with them.
-                db.update_topic(conn, existing["id"], lec_from=lo, lec_to=hi)
-                have_topics[key] = {"id": existing["id"],
-                                    "lec_from": lo, "lec_to": hi}
+                db.update_topic(conn, existing["id"], hours=hours)
+                have_topics[key] = {"id": existing["id"], "hours": hours}
 
         for ex in entry.get("exams", []):
             if not isinstance(ex, dict):
@@ -952,10 +1005,14 @@ _LEC_RE = re.compile(r"^\s*L?\s*(\d{1,3})\s*(?:[-–]\s*L?\s*(\d{1,3}))?\s*$",
 def parse_lec_range(text) -> tuple:
     """'9-14' / 'L9-14' / 'L3' -> (9, 14) / (9, 14) / (3, 3).
 
+    A handout that writes its topics as "L9-14 Interfaces" is stating how many
+    hours it gives them, which is all the app keeps -- see topic_hours(). The
+    numbers themselves are not tracked: a lecture number is the handout's plan,
+    not what happened in the room.
+
     Only a bare lecture reference is accepted. A title like 'L1.1 First order
     equations' deliberately does NOT match: dotted numbering is per-module, not
-    the global lecture count, and reading it as one silently mis-maps the whole
-    syllabus. Those courses carry explicit lec_from/lec_to instead.
+    a lecture count, and reading it as one silently mis-weights the syllabus.
     """
     if not text:
         return (None, None)
@@ -966,6 +1023,44 @@ def parse_lec_range(text) -> tuple:
     lo = int(m.group(1))
     hi = int(m.group(2)) if m.group(2) else lo
     return (lo, hi) if lo <= hi else (hi, lo)
+
+
+def topic_weights(entries) -> list[int]:
+    """How many lecture-hours the handout gives each topic, in order.
+
+    Per topic the weight comes from an explicit "hours", else from a lecture
+    range the handout stated ("L9-14" is six hours' worth of material) in the
+    entry, the title or the unit, else 1 -- and then every topic weighs the
+    same and the percentage is a plain topic count.
+
+    Ranges are resolved across the whole list rather than one at a time,
+    because a handout that quotes "L8-18" against three topics is splitting
+    eleven hours between them, not giving each eleven. See sch.split_hours.
+    """
+    explicit, ranges = [], []
+    for entry in entries:
+        title = entry if isinstance(entry, str) else str(entry.get("title", ""))
+        unit = "" if isinstance(entry, str) else str(entry.get("unit", ""))
+        lo = hi = None
+        h = None
+        if isinstance(entry, dict):
+            h = _int(entry.get("hours"))
+            lo, hi = parse_lec_range(entry.get("lec", ""))
+            lo = _int(entry.get("lec_from")) or lo
+            hi = _int(entry.get("lec_to")) or hi
+        if lo is None and hi is None:
+            lo, hi = parse_lec_range(title)
+            if lo is None:
+                lo, hi = parse_lec_range(unit)
+        explicit.append(max(1, h) if h else None)
+        if lo is None and hi is None:
+            ranges.append(None)
+        else:
+            lo = lo if lo is not None else hi
+            hi = hi if hi is not None else lo
+            ranges.append((lo, hi))
+    shared = sch.split_hours(ranges)
+    return [e if e is not None else shared[i] for i, e in enumerate(explicit)]
 
 
 def _weekday_num(name: str) -> int | None:

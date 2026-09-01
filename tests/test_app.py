@@ -140,8 +140,6 @@ def test_marking_a_lecture_covered_completes_the_topic(client):
     post(client, f"/lecture/{lec['id']}/topics", topic_id=str(topic["id"]))
 
     assert db.list_topics(conn, cid)[0]["status"] == "done"
-    last = db.last_covered(conn, cid)
-    assert last["title"] == "Inheritance"
     conn.close()
 
 
@@ -222,14 +220,14 @@ def test_shortening_the_semester_retracts_later_classes(client):
     conn.close()
 
 
-def test_watermark_ticks_topics_and_survives_a_reimport(client):
-    """The whole point of the redesign: set 'done till lecture N' once and the
-    topics follow, without touching a single class."""
+def test_import_reads_hours_from_the_handout_and_keeps_progress(client):
+    """The handout's lecture ranges survive only as weights: "L4-8" means five
+    hours\' worth of material, not that it is taught in lectures 4 to 8."""
     import json
     payload = {
         "semester": {"start": "2054-08-03", "end": "2054-11-27"},
         "courses": [{
-            "code": "DEMO 206", "lectures_planned": 42,
+            "code": "DEMO 206",
             "topics": [
                 {"title": "L1-2 Basics", "lec": "1-2"},
                 {"title": "L3 Syntax", "lec": "3"},
@@ -242,22 +240,11 @@ def test_watermark_ticks_topics_and_survives_a_reimport(client):
     conn = conn_of(client)
     cid = db.get_course_by_code(conn, "DEMO 206")["id"]
     topics = db.list_topics(conn, cid)
-    assert [(t["lec_from"], t["lec_to"]) for t in topics] == [
-        (1, 2), (3, 3), (4, 8), (None, None)]
+    assert [t["hours"] for t in topics] == [2, 1, 5, 1]
 
-    # What lecture 5 implies, before committing anything.
-    r = client.get(f"/course/{cid}/suggest?n=5")
-    body = r.get_json()
-    assert body["done"] == [topics[0]["id"], topics[1]["id"]]
-    assert body["partial"] == [topics[2]["id"]]
-    assert body["unnumbered"] == [topics[3]["id"]]
-
-    post(client, f"/course/{cid}/progress", lectures_done="5",
-         topics_submitted="1",
+    post(client, f"/course/{cid}/progress",
          done=[str(topics[0]["id"]), str(topics[1]["id"])],
          partial=str(topics[2]["id"]))
-
-    assert db.get_course(conn, cid)["lectures_done"] == 5
     after = {t["title"]: t["status"] for t in db.list_topics(conn, cid)}
     assert after["L1-2 Basics"] == "done"
     assert after["L4-8 Classes"] == "partial"
@@ -265,8 +252,148 @@ def test_watermark_ticks_topics_and_survives_a_reimport(client):
 
     # Re-importing the corrected syllabus must not reset that progress.
     post(client, "/timetable/import", payload=json.dumps(payload))
-    assert db.get_course(conn, cid)["lectures_done"] == 5
     assert {t["title"]: t["status"] for t in db.list_topics(conn, cid)} == after
+    assert [t["hours"] for t in db.list_topics(conn, cid)] == [2, 1, 5, 1]
+    conn.close()
+
+
+def test_import_shares_a_range_the_handout_quotes_against_several_topics(client):
+    """DEMO 209 writes "L8-18" against three topics. Eleven hours between them,
+    not eleven each."""
+    import json
+    post(client, "/timetable/import", payload=json.dumps({
+        "courses": [{"code": "DEMO 209", "topics": [
+            {"title": "L1-2 Sets", "lec": "1-2"},
+            {"title": "L8-18 Relations", "lec": "8-18"},
+            {"title": "L8-18 Closures", "lec": "8-18"},
+            {"title": "L8-18 Lattices", "lec": "8-18"},
+        ]}]}))
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 209")["id"]
+    assert [t["hours"] for t in db.list_topics(conn, cid)] == [2, 4, 4, 3]
+    conn.close()
+
+
+def test_import_takes_an_explicit_hours_key_over_any_range(client):
+    import json
+    post(client, "/timetable/import", payload=json.dumps({
+        "courses": [{"code": "DEMO 210", "topics": [
+            {"title": "L1-9 Big module", "hours": 3},
+            {"title": "Plain topic"},
+        ]}]}))
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, "DEMO 210")["id"]
+    assert [t["hours"] for t in db.list_topics(conn, cid)] == [3, 1]
+    conn.close()
+
+
+def _course_with_topics(client, code="DEMO 208", titles=("Binary", "K-maps",
+                                                        "Sequential")):
+    import json
+    post(client, "/timetable/import", payload=json.dumps({
+        "courses": [{"code": code,
+                     "topics": [{"title": t} for t in titles]}]}))
+    conn = conn_of(client)
+    cid = db.get_course_by_code(conn, code)["id"]
+    return conn, cid, db.list_topics(conn, cid)
+
+
+def test_the_log_is_what_gets_typed_in(client):
+    conn, cid, _ = _course_with_topics(client)
+    post(client, f"/course/{cid}/note", date="2054-08-20",
+         text="finished binary, started K-maps")
+    post(client, f"/course/{cid}/note", text="")            # rejected
+    notes = db.list_notes(conn, cid)
+    assert len(notes) == 1
+    assert notes[0]["date"] == "2054-08-20"
+
+    r = client.get(f"/course/{cid}")
+    assert b"finished binary" in r.data
+    post(client, f"/note/{notes[0]['id']}/delete")
+    assert db.list_notes(conn, cid) == []
+    conn.close()
+
+
+def test_resolving_the_log_proposes_but_stores_nothing(client, monkeypatch):
+    """The AI reads a log and can be wrong about it. Its answer is a proposal
+    until the owner saves, so a bad reading costs a click, not the record."""
+    conn, cid, topics = _course_with_topics(client)
+    post(client, f"/course/{cid}/note", text="did sequential, skipped K-maps")
+
+    monkeypatch.setattr(acad.llm, "configured", lambda: True)
+    monkeypatch.setattr(acad.llm, "resolve_coverage",
+                        lambda *a, **k: {"states": ["done", "pending", "done"],
+                                         "summary": "Taught out of order.",
+                                         "unmatched": []})
+    r = post(client, f"/course/{cid}/resolve")
+    assert b"Taught out of order." in r.data
+    # Proposed, not stored.
+    assert [t["status"] for t in db.list_topics(conn, cid)] == ["pending"] * 3
+    # ...but shown pre-ticked, so it can be corrected in place.
+    assert r.data.count(b'name="done" value=') == 3
+
+    post(client, f"/course/{cid}/progress",
+         done=[str(topics[0]["id"]), str(topics[2]["id"])])
+    assert [t["status"] for t in db.list_topics(conn, cid)] == [
+        "done", "pending", "done"]
+    # Saving consumes the proposal rather than leaving it to reappear.
+    assert b"Taught out of order." not in client.get(f"/course/{cid}").data
+    conn.close()
+
+
+def test_a_proposal_is_dropped_when_the_log_behind_it_changes(client, monkeypatch):
+    conn, cid, _ = _course_with_topics(client)
+    post(client, f"/course/{cid}/note", text="did binary")
+    monkeypatch.setattr(acad.llm, "configured", lambda: True)
+    monkeypatch.setattr(acad.llm, "resolve_coverage",
+                        lambda *a, **k: {"states": ["done", "pending", "pending"],
+                                         "summary": "One down.", "unmatched": []})
+    post(client, f"/course/{cid}/resolve")
+    post(client, f"/note/{db.list_notes(conn, cid)[0]['id']}/delete")
+    assert b"One down." not in client.get(f"/course/{cid}").data
+    conn.close()
+
+
+def test_a_failed_reading_says_so_and_changes_nothing(client, monkeypatch):
+    conn, cid, _ = _course_with_topics(client)
+    post(client, f"/course/{cid}/note", text="did binary")
+    monkeypatch.setattr(acad.llm, "configured", lambda: True)
+
+    def boom(*a, **k):
+        raise acad.llm.LLMError("model answered for 2 of 3 topics")
+    monkeypatch.setattr(acad.llm, "resolve_coverage", boom)
+
+    r = post(client, f"/course/{cid}/resolve")
+    assert b"Could not work it out" in r.data
+    assert [t["status"] for t in db.list_topics(conn, cid)] == ["pending"] * 3
+    conn.close()
+
+
+def test_weighing_refuses_to_overwrite_the_handouts_own_hours(client, monkeypatch):
+    conn, cid, topics = _course_with_topics(client)
+    monkeypatch.setattr(acad.llm, "configured", lambda: True)
+    monkeypatch.setattr(acad.llm, "estimate_hours",
+                        lambda *a, **k: [5, 3, 4])
+
+    r = post(client, f"/course/{cid}/weigh", total_hours="12")
+    assert [t["hours"] for t in db.list_topics(conn, cid)] == [5, 3, 4]
+
+    # Now they carry real weights, so a second pass must not touch them.
+    r = post(client, f"/course/{cid}/weigh", total_hours="20")
+    assert b"not overwriting" in r.data
+    assert [t["hours"] for t in db.list_topics(conn, cid)] == [5, 3, 4]
+    conn.close()
+
+
+def test_percentage_left_is_weighted_by_hours(client):
+    conn, cid, topics = _course_with_topics(client)
+    for t, h in zip(topics, (6, 2, 2)):
+        db.update_topic(conn, t["id"], hours=h)
+    post(client, f"/course/{cid}/progress", done=str(topics[0]["id"]))
+
+    # 6 of 10 hours done -> 40% left, not "2 of 3 topics left".
+    r = client.get(f"/course/{cid}")
+    assert b"40<i>%</i>" in r.data
     conn.close()
 
 
@@ -283,20 +410,22 @@ def test_strip_lec_removes_only_a_leading_lecture_marker():
     assert strip_lec("") == ""
 
 
-def test_progress_without_topics_submitted_only_moves_the_watermark(client):
-    """Posting just the number must not silently clear every topic."""
+def test_saving_progress_rewrites_exactly_what_was_ticked(client):
+    """The form posts the whole state, not a diff, so unticking is a save."""
     import json
     post(client, "/timetable/import", payload=json.dumps({
         "courses": [{"code": "DEMO 209",
-                     "topics": [{"title": "L1 Sets", "lec": "1"}]}]}))
+                     "topics": [{"title": "Sets"}, {"title": "Relations"}]}]}))
     conn = conn_of(client)
     cid = db.get_course_by_code(conn, "DEMO 209")["id"]
-    tid = db.list_topics(conn, cid)[0]["id"]
-    db.update_topic(conn, tid, status="done")
+    a, b = db.list_topics(conn, cid)
 
-    post(client, f"/course/{cid}/progress", lectures_done="7")
-    assert db.get_course(conn, cid)["lectures_done"] == 7
-    assert db.list_topics(conn, cid)[0]["status"] == "done"   # untouched
+    post(client, f"/course/{cid}/progress", done=str(a["id"]),
+         partial=str(b["id"]))
+    assert [t["status"] for t in db.list_topics(conn, cid)] == ["done", "partial"]
+
+    post(client, f"/course/{cid}/progress", done=str(b["id"]))
+    assert [t["status"] for t in db.list_topics(conn, cid)] == ["pending", "done"]
     conn.close()
 
 
@@ -386,8 +515,8 @@ def test_duplicate_one_off_is_reported_not_double_added(client):
 
 # ---------------------------------------------------------------- importer --
 
-def test_import_replace_works_without_lectures_planned(client):
-    """--replace used to be nested under lectures_planned, so a payload
+def test_import_replace_drops_the_old_slots(client):
+    """--replace used to be nested under a lectures_planned key, so a payload
     without that key silently kept the old slots."""
     import json
     first = {"courses": [{"code": "DEMO 209", "slots": [

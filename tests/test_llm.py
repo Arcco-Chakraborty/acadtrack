@@ -33,53 +33,97 @@ def test_load_keys_splits_and_trims(monkeypatch):
     assert llm.load_keys() == [] and llm.configured() is False
 
 
-def test_estimate_accepts_a_contiguous_in_order_cover(fake_gemini):
-    fake_gemini["reply"] = {"ranges": [
-        {"n": 1, "from": 1, "to": 4},
-        {"n": 2, "from": 5, "to": 9},
-        {"n": 3, "from": 10, "to": 12},
-    ]}
-    out = llm.estimate_lecture_ranges("DEMO 208", "Example course subject 35", 12,
-                                      ["Binary", "Combinational", "Sequential"])
-    assert out == [(1, 4), (5, 9), (10, 12)]
+def TOPIC(title, unit="", hours=1):
+    return {"title": title, "unit": unit, "hours": hours}
+
+
+def NOTE(date, text):
+    return {"date": date, "text": text}
+
+
+def test_resolve_coverage_returns_one_state_per_topic(fake_gemini):
+    fake_gemini["reply"] = {
+        "topics": [{"n": 1, "state": "done"}, {"n": 2, "state": "partial"},
+                   {"n": 3, "state": "pending"}],
+        "summary": "Mid-way through combinational logic.",
+        "unmatched": [],
+    }
+    out = llm.resolve_coverage(
+        "DEMO 208", "Example course subject 35",
+        [TOPIC("Binary", hours=2), TOPIC("Combinational"), TOPIC("Sequential")],
+        [NOTE("2054-08-20", "finished binary, started K-maps")])
+
+    assert out["states"] == ["done", "partial", "pending"]
+    assert out["summary"].startswith("Mid-way")
     assert "DEMO 208" in fake_gemini["prompt"]
+    assert "finished binary" in fake_gemini["prompt"]     # the log is sent
+    assert "2 lecture-hours" in fake_gemini["prompt"]     # so are the weights
 
 
-@pytest.mark.parametrize("ranges, why", [
-    ([{"n": 1, "from": 1, "to": 4}], "too few ranges"),
-    ([{"n": 1, "from": 1, "to": 4}, {"n": 2, "from": 4, "to": 9}], "overlaps"),
-    ([{"n": 1, "from": 1, "to": 4}, {"n": 2, "from": 6, "to": 9}], "leaves a gap"),
-    ([{"n": 1, "from": 2, "to": 4}, {"n": 2, "from": 5, "to": 9}], "does not start at 1"),
-    ([{"n": 1, "from": 1, "to": 4}, {"n": 2, "from": 5, "to": 7}], "stops short of the total"),
-    ([{"n": 1, "from": 1, "to": 4}, {"n": 2, "from": 5, "to": 99}], "runs past the total"),
-    ([{"n": 1, "from": 5, "to": 1}, {"n": 2, "from": 6, "to": 9}], "is backwards"),
+def test_resolve_coverage_lets_a_later_topic_be_done_before_an_earlier_one(
+        fake_gemini):
+    """Instructors reorder and classes run late, so out-of-order coverage is a
+    legitimate answer and must not be normalised away."""
+    fake_gemini["reply"] = {"topics": [{"n": 1, "state": "pending"},
+                                       {"n": 2, "state": "done"}]}
+    out = llm.resolve_coverage("X", "Y", [TOPIC("a"), TOPIC("b")],
+                               [NOTE("2054-08-20", "did b, skipped a")])
+    assert out["states"] == ["pending", "done"]
+
+
+@pytest.mark.parametrize("topics, why", [
+    ([{"n": 1, "state": "done"}], "one state short"),
+    ([{"n": 1, "state": "done"}, {"n": 3, "state": "done"}], "keyed wrong"),
+    ([{"n": 1, "state": "done"}, {"n": 2, "state": "maybe"}], "invalid state"),
+    ([], "nothing at all"),
 ])
-def test_estimate_rejects_anything_that_is_not_a_clean_cover(fake_gemini, ranges, why):
-    """A mis-mapped range silently marks the wrong topics done, which is worse
-    than having no estimate at all."""
-    fake_gemini["reply"] = {"ranges": ranges}
+def test_resolve_coverage_rejects_an_answer_that_is_not_one_state_per_topic(
+        fake_gemini, topics, why):
+    """A short or mis-keyed answer would silently mark the wrong half of a
+    syllabus covered, which is worse than no answer."""
+    fake_gemini["reply"] = {"topics": topics}
     with pytest.raises(llm.LLMError):
-        llm.estimate_lecture_ranges("X", "Y", 9, ["a", "b"])
+        llm.resolve_coverage("X", "Y", [TOPIC("a"), TOPIC("b")],
+                             [NOTE("2054-08-20", "did a")])
 
 
-def test_estimate_refuses_when_there_are_more_topics_than_lectures(fake_gemini):
-    fake_gemini["reply"] = {"ranges": []}
-    with pytest.raises(llm.LLMError, match="cannot cover"):
-        llm.estimate_lecture_ranges("X", "Y", 2, ["a", "b", "c"])
-
-
-def test_estimate_with_no_topics_does_not_call_the_model(monkeypatch):
+def test_resolve_coverage_refuses_without_a_log_or_a_syllabus(monkeypatch):
     monkeypatch.setattr(llm, "GeminiBackend",
                         lambda: pytest.fail("should not be called"))
-    assert llm.estimate_lecture_ranges("X", "Y", 10, []) == []
+    with pytest.raises(llm.LLMError, match="no syllabus"):
+        llm.resolve_coverage("X", "Y", [], [NOTE("2054-08-20", "did a")])
+    with pytest.raises(llm.LLMError, match="log"):
+        llm.resolve_coverage("X", "Y", [TOPIC("a")], [])
 
 
-def test_estimate_rejects_ranges_keyed_to_the_wrong_topics(fake_gemini):
-    """Right count, wrong 'n' keys used to escape as a KeyError."""
-    fake_gemini["reply"] = {"ranges": [
-        {"n": 1, "from": 1, "to": 3},
-        {"n": 2, "from": 4, "to": 6},
-        {"n": 4, "from": 7, "to": 9},        # n=4 for a 3-topic course
-    ]}
+def test_estimate_hours_accepts_weights_that_add_up(fake_gemini):
+    fake_gemini["reply"] = {"hours": [{"n": 1, "hours": 4},
+                                      {"n": 2, "hours": 5},
+                                      {"n": 3, "hours": 3}]}
+    assert llm.estimate_hours("DEMO 208", "Example course subject 35", ["a", "b", "c"],
+                              12) == [4, 5, 3]
+
+
+@pytest.mark.parametrize("hours, why", [
+    ([{"n": 1, "hours": 4}], "too few"),
+    ([{"n": 1, "hours": 4}, {"n": 3, "hours": 5}], "keyed wrong"),
+    ([{"n": 1, "hours": 4}, {"n": 2, "hours": 4}], "do not add up"),
+    ([{"n": 1, "hours": 0}, {"n": 2, "hours": 9}], "a topic worth nothing"),
+])
+def test_estimate_hours_rejects_a_weighting_that_does_not_hold(
+        fake_gemini, hours, why):
+    fake_gemini["reply"] = {"hours": hours}
     with pytest.raises(llm.LLMError):
-        llm.estimate_lecture_ranges("X", "Y", 9, ["a", "b", "c"])
+        llm.estimate_hours("X", "Y", ["a", "b"], 9)
+
+
+def test_estimate_hours_refuses_fewer_hours_than_topics(fake_gemini):
+    fake_gemini["reply"] = {"hours": []}
+    with pytest.raises(llm.LLMError, match="cannot cover"):
+        llm.estimate_hours("X", "Y", ["a", "b", "c"], 2)
+
+
+def test_estimate_hours_with_no_topics_does_not_call_the_model(monkeypatch):
+    monkeypatch.setattr(llm, "GeminiBackend",
+                        lambda: pytest.fail("should not be called"))
+    assert llm.estimate_hours("X", "Y", [], 10) == []

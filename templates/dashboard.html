@@ -68,7 +68,7 @@
   {% if overview %}
   <div class="cards">
     {% for o in overview %}
-    {% set c = o.course %}{% set p = o.pos %}
+    {% set c = o.course %}{% set p = o.cov %}
     <a class="card" href="{{ url_for('course_detail', course_id=c['id']) }}"
        style="--accent: {{ c['color'] or '#3987e5' }}">
       <div class="card-head">
@@ -79,18 +79,18 @@
       <div class="card-title">{{ c['title'] }}</div>
 
       <div class="metric">
-        <span>At lecture</span>
-        <b>{{ p.lectures_done }}{% if p.lectures_planned %} <i>of {{ p.lectures_planned }}</i>{% endif %}</b>
+        <span>Syllabus left</span>
+        <b>{% if p.pct_left is not none %}{{ p.pct_left }}<i>%</i>{% else %}no syllabus{% endif %}</b>
       </div>
-      {{ meter(p.pct) }}
+      {{ meter(p.pct_done) }}
       <div class="metric">
         <span>Topics left</span>
-        <b>{% if p.topics_total %}{{ p.topics_left }} <i>of {{ p.topics_total }}</i>{% else %}no syllabus{% endif %}</b>
+        <b>{% if p.topics_total %}{{ p.topics_left }} <i>of {{ p.topics_total }}</i>{% else %}—{% endif %}</b>
       </div>
 
       <div class="submetrics">
-        {% if p.slack is not none %}
-          <span class="badge {{ 'is-bad' if p.slack < 0 else 'is-good' }}">{{ '%+d'|format(p.slack) }} slack</span>
+        {% if p.behind %}
+          <span class="badge is-warn">{{ p.behind }} skipped over</span>
         {% endif %}
         {% if o.exam %}
           <span class="badge {{ 'is-warn' if o.exam.days <= 21 }}">{{ o.exam.label|lower }} in {{ o.exam.days }}d</span>
@@ -101,8 +101,8 @@
         <span class="{{ 'strong' if o.week.left }}">{{ o.week.left }} this week</span>
         {% if o.next %}
           <span>next {{ o.next.wd }} {{ fmt_time(o.next['start_time']) }}</span>
-        {% else %}
-          <span>{{ p.lectures_left_calendar }} left overall</span>
+        {% elif o.note %}
+          <span>last logged {{ o.note['date'] }}</span>
         {% endif %}
       </div>
     </a>

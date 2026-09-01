@@ -97,72 +97,71 @@ def test_group_by_day_always_returns_seven_buckets():
     assert days[3]["lectures"] == []
 
 
-def TP(id, lo, hi, status="pending"):
-    return {"id": id, "lec_from": lo, "lec_to": hi, "status": status}
+def TP(id, hours=1, status="pending"):
+    return {"id": id, "hours": hours, "status": status}
 
 
-def test_suggest_topics_marks_finished_ranges_done_and_straddling_partial():
-    topics = [TP(1, 1, 2), TP(2, 3, 3), TP(3, 4, 8), TP(4, 9, 14)]
-    s = sch.suggest_topics(topics, 5)
-    assert s["done"] == {1, 2}          # ranges that ended at or before 5
-    assert s["partial"] == {3}          # 4-8 straddles 5
-    assert 4 not in s["done"] and 4 not in s["partial"]
+def test_coverage_weights_topics_by_the_handout_hours():
+    # 2 + 6 + 4 = 12 hours; the 6-hour topic alone is half the syllabus.
+    topics = [TP(1, 2, "done"), TP(2, 6, "done"), TP(3, 4)]
+    cov = sch.coverage(topics)
+    assert cov["hours_total"] == 12
+    assert cov["hours_covered"] == 8
+    assert cov["hours_left"] == 4
+    assert cov["pct_done"] == 67
+    assert cov["pct_left"] == 33
+    assert cov["weighted"] is True
+    assert cov["topics_left"] == 1
 
 
-def test_suggest_topics_never_guesses_at_unnumbered_topics():
-    """A handout that gave modules but no lecture numbers must not have its
-    topics silently marked covered."""
-    topics = [TP(1, 1, 2), TP(2, None, None), TP(3, None, None)]
-    s = sch.suggest_topics(topics, 40)
-    assert s["done"] == {1}
-    assert [t["id"] for t in s["unnumbered"]] == [2, 3]
+def test_coverage_counts_a_partial_topic_as_half_its_hours():
+    """Half-taught is not nothing; scoring it zero makes a course sitting
+    mid-unit look stalled."""
+    cov = sch.coverage([TP(1, 4, "done"), TP(2, 4, "partial"), TP(3, 4)])
+    assert cov["hours_covered"] == 6      # 4 + half of 4
+    assert cov["pct_left"] == 50
+    assert cov["topics_partial"] == 1
+    assert cov["topics_left"] == 2        # partial is not finished
 
 
-def test_suggest_topics_at_zero_marks_nothing():
-    s = sch.suggest_topics([TP(1, 1, 2), TP(2, 3, 3)], 0)
-    assert s["done"] == set() and s["partial"] == set()
+def test_coverage_falls_back_to_a_plain_topic_count():
+    """A handout that listed modules without hours weighs every topic the
+    same, and the UI is told so."""
+    cov = sch.coverage([TP(1, 1, "done"), TP(2), TP(3), TP(4)])
+    assert cov["weighted"] is False
+    assert cov["hours_total"] == 4
+    assert cov["pct_left"] == 75
 
 
-def C(done, planned):
-    return {"lectures_done": done, "lectures_planned": planned}
+def test_coverage_makes_no_assumption_that_teaching_follows_the_handout():
+    """Instructors reorder. A topic done late in the handout says nothing
+    about the ones before it, which stay pending and stay counted as left."""
+    topics = [TP(1, 3), TP(2, 3), TP(3, 3, "done")]
+    cov = sch.coverage(topics)
+    assert cov["hours_covered"] == 3
+    assert cov["pct_left"] == 67
+    assert cov["behind"] == 2          # two skipped over, not covered
+    assert cov["frontier"]["id"] == 3
 
 
-def test_syllabus_position_projects_from_the_observed_rate():
-    # 10 lectures in, 5 of 20 topics done -> 0.5 topics/lecture.
-    topics = [TP(i, i, i, "done" if i <= 5 else "pending") for i in range(1, 21)]
-    p = sch.syllabus_position(C(10, 42), topics, lectures_left_calendar=60)
-
-    assert p["remaining_plan"] == 32
-    assert p["topics_left"] == 15
-    assert p["rate"] == 0.5
-    assert p["est_lectures_for_rest"] == 30     # 15 topics / 0.5
-    assert p["slack"] == 2                      # 32 planned - 30 needed
-    assert p["lectures_left_calendar"] == 60
+def test_coverage_reports_nothing_skipped_when_teaching_ran_in_order():
+    cov = sch.coverage([TP(1, 2, "done"), TP(2, 2, "partial"), TP(3, 2)])
+    assert cov["behind"] == 0
 
 
-def test_syllabus_position_flags_a_course_that_must_speed_up():
-    # 20 lectures in, only 5 of 40 topics done -> 0.25/lecture, 35 left.
-    topics = [TP(i, i, i, "done" if i <= 5 else "pending") for i in range(1, 41)]
-    p = sch.syllabus_position(C(20, 42), topics, 40)
-    assert p["est_lectures_for_rest"] == 140
-    assert p["slack"] == 22 - 140                # deeply negative
-    assert p["slack"] < 0
+def test_coverage_with_no_topics_reports_none_not_zero():
+    cov = sch.coverage([])
+    assert cov["pct_done"] is None and cov["pct_left"] is None
+    assert cov["hours_total"] == 0
+    assert cov["frontier"] is None
 
 
-def test_syllabus_position_before_any_lecture_reports_no_estimate():
-    topics = [TP(1, 1, 2), TP(2, 3, 4)]
-    p = sch.syllabus_position(C(0, 42), topics, 50)
-    assert p["rate"] is None
-    assert p["est_lectures_for_rest"] is None
-    assert p["slack"] is None
-    assert p["remaining_plan"] == 42
-
-
-def test_syllabus_position_infers_planned_count_from_topic_numbering():
-    topics = [TP(1, 1, 2), TP(2, 3, 30)]
-    p = sch.syllabus_position(C(5, None), topics, 10)
-    assert p["lectures_planned"] == 30
-    assert p["remaining_plan"] == 25
+def test_course_stats_percentage_is_the_weighted_one():
+    stats = sch.course_stats([L("attended")],
+                             [TP(1, 9, "done"), TP(2, 1)],
+                             date(2054, 8, 17))
+    assert stats["topics_pct"] == 90        # hours, not 1-of-2 = 50
+    assert stats["topics_total"] == 2
 
 
 def test_pace_compares_syllabus_against_calendar():
@@ -179,13 +178,32 @@ def test_pace_compares_syllabus_against_calendar():
     assert sch.pace(sch.course_stats([], [], date(2054, 8, 17))) is None
 
 
-def test_syllabus_position_still_warns_when_the_plan_is_exhausted():
-    """remaining_plan == 0 with topics left must read as a shortfall, not as
-    'nothing to report' -- the old gating hid the estimate exactly then."""
-    topics = [TP(i, i, i, "done" if i <= 10 else "pending")
-              for i in range(1, 21)]
-    p = sch.syllabus_position(C(42, 42), topics, 0)
-    assert p["remaining_plan"] == 0
-    assert p["est_lectures_for_rest"] is not None
-    assert p["est_lectures_for_rest"] > 0
-    assert p["slack"] == -p["est_lectures_for_rest"]
+def test_split_hours_shares_a_range_quoted_against_several_topics():
+    """DEMO 209's handout gives "L8-18" to three separate topics. That is
+    eleven hours between them, not eleven each -- read the other way the
+    course adds up to 114 hours instead of its actual 42."""
+    ranges = [(1, 2), (3, 7), (3, 7), (8, 18), (8, 18), (8, 18)]
+    hours = sch.split_hours(ranges)
+    assert hours == [2, 3, 2, 4, 4, 3]
+    assert sum(hours) == 18                    # the span it actually covers
+
+
+def test_split_hours_leaves_distinct_ranges_alone():
+    assert sch.split_hours([(1, 2), (3, 3), (4, 8)]) == [2, 1, 5]
+
+
+def test_split_hours_gives_every_topic_at_least_an_hour():
+    """More topics than the range has hours still counts them all -- a topic
+    worth zero would vanish from the percentage."""
+    assert sch.split_hours([(1, 2)] * 4) == [1, 1, 1, 1]
+
+
+def test_split_hours_defaults_to_one_without_a_range():
+    assert sch.split_hours([None, None, (4, 6)]) == [1, 1, 3]
+    assert sch.split_hours([]) == []
+
+
+def test_split_hours_does_not_merge_a_range_that_recurs_later():
+    """Only neighbours share. The same range appearing again after another
+    topic is a separate group, because handouts write modules in blocks."""
+    assert sch.split_hours([(1, 4), (5, 6), (1, 4)]) == [4, 2, 4]

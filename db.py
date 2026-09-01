@@ -25,8 +25,6 @@ CREATE TABLE IF NOT EXISTS setting (
   value TEXT NOT NULL
 );
 
--- lectures_planned: how many lectures the handout's course plan has.
--- lectures_done:    the watermark — "I have been taught up to lecture N".
 CREATE TABLE IF NOT EXISTS course (
   id               INTEGER PRIMARY KEY,
   code             TEXT NOT NULL,
@@ -36,9 +34,7 @@ CREATE TABLE IF NOT EXISTS course (
   color            TEXT NOT NULL DEFAULT '',
   position         INTEGER NOT NULL DEFAULT 0,
   archived         INTEGER NOT NULL DEFAULT 0,
-  created_at       TEXT NOT NULL,
-  lectures_planned INTEGER,
-  lectures_done    INTEGER NOT NULL DEFAULT 0
+  created_at       TEXT NOT NULL
 );
 
 -- One weekly recurring meeting. weekday: 0=Mon .. 6=Sun.
@@ -89,9 +85,9 @@ CREATE TABLE IF NOT EXISTS lecture (
 CREATE INDEX IF NOT EXISTS lecture_date_idx ON lecture(date);
 CREATE INDEX IF NOT EXISTS lecture_course_idx ON lecture(course_id, date);
 
--- lec_from / lec_to are the handout's own lecture numbering ("L9-14" -> 9, 14).
--- They are what lets "I'm done till lecture N" resolve to a set of topics
--- without anyone tagging lectures by hand.
+-- hours: how much of the handout this topic is worth, from the hours the
+-- handout allots it. It weights the percentage and nothing else -- it says how
+-- much material the topic holds, never when it is taught.
 CREATE TABLE IF NOT EXISTS topic (
   id        INTEGER PRIMARY KEY,
   course_id INTEGER NOT NULL REFERENCES course(id) ON DELETE CASCADE,
@@ -100,8 +96,7 @@ CREATE TABLE IF NOT EXISTS topic (
   position  INTEGER NOT NULL DEFAULT 0,
   status    TEXT NOT NULL DEFAULT 'pending',   -- pending|partial|done
   note      TEXT NOT NULL DEFAULT '',
-  lec_from  INTEGER,
-  lec_to    INTEGER
+  hours     INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS topic_course_idx ON topic(course_id, position);
 
@@ -110,6 +105,18 @@ CREATE TABLE IF NOT EXISTS lecture_topic (
   topic_id   INTEGER NOT NULL REFERENCES topic(id) ON DELETE CASCADE,
   PRIMARY KEY (lecture_id, topic_id)
 );
+
+-- What the owner says was actually covered, in his own words, appended as he
+-- goes. This is the only record of progress that is ever typed in; every topic
+-- state is derived from it.
+CREATE TABLE IF NOT EXISTS progress_note (
+  id         INTEGER PRIMARY KEY,
+  course_id  INTEGER NOT NULL REFERENCES course(id) ON DELETE CASCADE,
+  date       TEXT NOT NULL,                  -- the class this describes
+  text       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS progress_note_idx ON progress_note(course_id, date);
 """
 
 DEFAULT_SETTINGS = {
@@ -138,11 +145,43 @@ def connect(path: str) -> sqlite3.Connection:
 # Columns added after the first release. SQLite has no "ADD COLUMN IF NOT
 # EXISTS", so they are applied by inspecting the table.
 MIGRATIONS = [
-    ("topic", "lec_from", "INTEGER"),
-    ("topic", "lec_to", "INTEGER"),
-    ("course", "lectures_planned", "INTEGER"),
-    ("course", "lectures_done", "INTEGER NOT NULL DEFAULT 0"),
+    ("topic", "hours", "INTEGER NOT NULL DEFAULT 1"),
 ]
+
+# Columns from the lecture-watermark design, which is gone: progress is no
+# longer "I am at lecture N". They are dropped rather than left in place,
+# because a stored lecture number reads as fact and is not one -- classes run
+# late and instructors reorder, so the handout's numbering never matched the
+# room. `topic.hours` inherits the one thing those numbers were good for.
+RETIRED_COLUMNS = [
+    ("topic", "lec_from"),
+    ("topic", "lec_to"),
+    ("course", "lectures_planned"),
+    ("course", "lectures_done"),
+]
+
+
+def _hours_from_lecture_ranges(conn) -> None:
+    """Seed `hours` from the old lec_from/lec_to on an existing database.
+
+    Those ranges were the handout's own numbering, so their *span* is exactly
+    the hours the handout allots the topic -- the one piece worth keeping.
+    Runs once, when the column is first added, before the ranges are dropped.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(topic)")}
+    if not {"lec_from", "lec_to"} <= cols:
+        return
+    import schedule as sch          # local: db.py is otherwise standalone
+    for c in conn.execute("SELECT id FROM course"):
+        rows = conn.execute(
+            "SELECT id, lec_from, lec_to FROM topic WHERE course_id = ? "
+            "ORDER BY position, id", (c["id"],)).fetchall()
+        ranges = [None if r["lec_from"] is None and r["lec_to"] is None
+                  else (r["lec_from"] if r["lec_from"] is not None else r["lec_to"],
+                        r["lec_to"] if r["lec_to"] is not None else r["lec_from"])
+                  for r in rows]
+        for r, h in zip(rows, sch.split_hours(ranges)):
+            conn.execute("UPDATE topic SET hours = ? WHERE id = ?", (h, r["id"]))
 
 
 def init(conn: sqlite3.Connection) -> None:
@@ -151,6 +190,19 @@ def init(conn: sqlite3.Connection) -> None:
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+            if (table, column) == ("topic", "hours"):
+                _hours_from_lecture_ranges(conn)
+    for table, column in RETIRED_COLUMNS:
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column in cols:
+            # DROP COLUMN needs SQLite 3.35+. An older build keeps the dead
+            # column instead; nothing reads it either way.
+            try:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+            except sqlite3.OperationalError:
+                pass
+    # The lecture-range estimator that wrote these is gone too.
+    conn.execute("DELETE FROM setting WHERE key LIKE 'estimated_lectures_%'")
     for k, v in DEFAULT_SETTINGS.items():
         conn.execute("INSERT OR IGNORE INTO setting (key, value) VALUES (?, ?)",
                      (k, v))
@@ -230,7 +282,7 @@ def create_course(conn, code: str, title: str = "", instructor: str = "",
 
 def update_course(conn, course_id: int, **fields) -> None:
     allowed = {"code", "title", "instructor", "credits", "color", "position",
-               "archived", "lectures_planned", "lectures_done"}
+               "archived"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return
@@ -408,16 +460,17 @@ def list_topics(conn, course_id: int):
 
 
 def create_topic(conn, course_id: int, title: str, unit: str = "",
-                 position: int | None = None, lec_from=None, lec_to=None) -> int:
+                 position: int | None = None, hours: int = 1) -> int:
     if position is None:
         row = conn.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM topic "
             "WHERE course_id = ?", (course_id,)).fetchone()
         position = row["p"]
     cur = conn.execute(
-        "INSERT INTO topic (course_id, title, unit, position, lec_from, lec_to) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (course_id, title.strip(), unit.strip(), position, lec_from, lec_to))
+        "INSERT INTO topic (course_id, title, unit, position, hours) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (course_id, title.strip(), unit.strip(), position,
+         max(1, int(hours or 1))))
     conn.commit()
     return cur.lastrowid
 
@@ -426,9 +479,9 @@ def set_topic_statuses(conn, course_id: int, done_ids: set[int],
                        partial_ids: set[int] | None = None) -> None:
     """Rewrite every topic status for one course in a single transaction.
 
-    This is what the "done till lecture N" form posts: the whole checkbox
-    state, not a diff. Anything not named goes back to pending, so unticking
-    is as easy as ticking.
+    This is what the progress form posts: the whole checkbox state, not a
+    diff. Anything not named goes back to pending, so unticking is as easy as
+    ticking.
     """
     partial_ids = partial_ids or set()
     with conn:
@@ -445,8 +498,7 @@ def set_topic_statuses(conn, course_id: int, done_ids: set[int],
 
 
 def update_topic(conn, topic_id: int, **fields) -> None:
-    allowed = {"title", "unit", "position", "status", "note", "lec_from",
-               "lec_to"}
+    allowed = {"title", "unit", "position", "status", "note", "hours"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return
@@ -488,14 +540,40 @@ def topics_for_lectures(conn, lecture_ids: list[int]) -> dict[int, list]:
     return out
 
 
-def last_covered(conn, course_id: int):
-    """The most recent (lecture, topic) pair actually taught — this is what
-    'till where I have done' reports."""
+# --------------------------------------------------------- progress notes --
+
+def list_notes(conn, course_id: int):
+    """One course's log, oldest first — the order the AI reads it in."""
     return conn.execute(
-        "SELECT l.date, l.id AS lecture_id, t.title, t.unit, t.id AS topic_id "
-        "FROM lecture_topic lt "
-        "JOIN lecture l ON l.id = lt.lecture_id "
-        "JOIN topic t ON t.id = lt.topic_id "
-        "WHERE l.course_id = ? AND l.status != 'cancelled' "
-        "ORDER BY l.date DESC, l.start_time DESC, t.position DESC LIMIT 1",
-        (course_id,)).fetchone()
+        "SELECT * FROM progress_note WHERE course_id = ? "
+        "ORDER BY date, id", (course_id,)).fetchall()
+
+
+def latest_note(conn, course_id: int):
+    return conn.execute(
+        "SELECT * FROM progress_note WHERE course_id = ? "
+        "ORDER BY date DESC, id DESC LIMIT 1", (course_id,)).fetchone()
+
+
+def create_note(conn, course_id: int, date_s: str, text: str) -> int:
+    cur = conn.execute(
+        "INSERT INTO progress_note (course_id, date, text, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (course_id, date_s.strip(), text.strip(), _now()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_note(conn, note_id: int, **fields) -> None:
+    sets = {k: v for k, v in fields.items() if k in {"date", "text"}}
+    if not sets:
+        return
+    cols = ", ".join(f"{k} = ?" for k in sets)
+    conn.execute(f"UPDATE progress_note SET {cols} WHERE id = ?",
+                 (*sets.values(), note_id))
+    conn.commit()
+
+
+def delete_note(conn, note_id: int) -> None:
+    conn.execute("DELETE FROM progress_note WHERE id = ?", (note_id,))
+    conn.commit()

@@ -10,20 +10,21 @@
     <p class="crumb"><a href="{{ url_for('courses') }}">Courses</a> <svg class="i"><use href="#i-chev-r"/></svg></p>
     <h1><span class="cdot big" aria-hidden="true"></span>{{ course['code'] }}</h1>
     <p class="muted">{{ course['title'] }}{% if course['instructor'] %} · {{ course['instructor'] }}{% endif %}{% if course['credits'] %} · {{ course['credits'] }} cr{% endif %}</p>
-    {% if last %}
-      <p class="lastdone">Last covered: <b>{{ last['title'] | strip_lec }}</b>
-        <span class="muted">({{ last['date'] }})</span></p>
+    {% if notes %}
+      {% set n = notes[-1] %}
+      <p class="lastdone">Last logged: <b>{{ n['text'] }}</b>
+        <span class="muted">({{ n['date'] }})</span></p>
     {% endif %}
   </div>
   <div class="hero-side">
-    {% if pos.pct is not none %}
-    <div class="ring" style="--p: {{ pos.pct }}" role="img" aria-label="{{ pos.pct }}% of the syllabus done">
-      <b>{{ pos.pct }}<i>%</i></b><span>syllabus</span>
+    {% if cov.pct_left is not none %}
+    <div class="ring" style="--p: {{ cov.pct_done }}" role="img" aria-label="{{ cov.pct_left }}% of the syllabus left">
+      <b>{{ cov.pct_left }}<i>%</i></b><span>left</span>
     </div>
     {% endif %}
     <div class="tiles">
-      <div class="tile"><b>{{ pos.lectures_done }}{% if pos.lectures_planned %}<i>/{{ pos.lectures_planned }}</i>{% endif %}</b><span>lecture reached</span></div>
-      <div class="tile"><b>{{ pos.topics_left }}</b><span>topics left</span></div>
+      <div class="tile"><b>{{ cov.hours_left }}</b><span>{{ 'hours' if cov.weighted else 'topics' }} to cover</span></div>
+      <div class="tile"><b>{{ cov.topics_left }}</b><span>topics left</span></div>
       <div class="tile"><b>{{ week.left }}</b><span>this week</span></div>
       {% if stats.attendance_pct is not none %}
       <div class="tile {{ 'is-bad' if stats.attendance_pct < 75 }}"><b>{{ stats.attendance_pct }}<i>%</i></b><span>attendance</span></div>
@@ -32,8 +33,9 @@
   </div>
 </section>
 
-{{ progress_panel(course, topics, pos, suggest, back,
-                  llm_ready=llm_ready, estimated=estimated) }}
+{{ progress_panel(course, topics, cov, notes, proposal, back,
+                  today=today.isoformat(), llm_ready=llm_ready,
+                  weighted_by_ai=weighted_by_ai) }}
 
 {% if exams %}
 <section class="panel">
