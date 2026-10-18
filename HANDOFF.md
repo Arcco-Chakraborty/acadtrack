@@ -26,3 +26,15 @@ The application is a reusable academic attendance and progress tracker. Privacy 
 
 ## How to resume
 Read this note, inspect Git status and run the documented offline verification before changing the application. Configure your own host, accounts and private academic data outside Git.
+
+## Verification and current state
+- Synthetic data and generic configuration examples are ready for independent review.
+- Offline verification: 76 tests pass using `python -m pytest -q --disable-socket` (including the example import integration check). Network sockets were disabled throughout the run.
+- The demonstration imports create two courses, two recurring slots, three topics and two example assessments. Their shared term and example break combine correctly, and reimporting does not duplicate records.
+- A history privacy check against a separate private marker manifest failed on the original history and passed after local sanitization. The private manifest is deliberately kept outside this repository.
+- Historical private handoff content has been replaced with this public-safe workflow note. Commit attribution uses the repository owner's public no-reply identity.
+
+## Remaining review
+- Independently review the full history and final secret-scan evidence before publishing.
+- Configure actual credentials, identity allowlists, hostnames and personal academic data only in ignored local files.
+- Generic deployment scripts were not run against any server. The application's live OAuth or model endpoints were not contacted during verification.
